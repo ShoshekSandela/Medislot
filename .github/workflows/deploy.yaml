@@ -1,3 +1,28 @@
-Test-Path "C:\MediSlot\.github\workflows\deploy.yaml"
+name: MediSlot Data Stack
 
-Test-Path "C:\MediSlot\cloudformation\data-stack.yaml"
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Connect to AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Check AWS connection
+        run: aws sts get-caller-identity
+
+      - name: Validate Data Stack
+        run: aws cloudformation validate-template --template-body file://cloudformation/data-stack.yaml --region us-east-1
