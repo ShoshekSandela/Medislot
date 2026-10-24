@@ -1,0 +1,3 @@
+Test-Path "C:\MediSlot\.github\workflows\deploy.yaml"
+
+Test-Path "C:\MediSlot\cloudformation\data-stack.yaml"
