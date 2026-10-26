@@ -67,30 +67,39 @@ jobs:
           VPC_ID=$(echo "$OUTPUTS" | jq -r \
             '.[] | select(.OutputKey=="VpcId") | .OutputValue')
 
-          PRIVATE_DATABASE_SUBNET_IDS=$(echo "$OUTPUTS" | jq -r \
-            '.[] | select(.OutputKey=="PrivateDatabaseSubnetIds") | .OutputValue')
+          PRIVATE_DB_SUBNET_A_ID=$(echo "$OUTPUTS" | jq -r \
+            '.[] | select(.OutputKey=="PrivateDBSubnetAId") | .OutputValue')
 
-          APPLICATION_SECURITY_GROUP_ID=$(echo "$OUTPUTS" | jq -r \
-            '.[] | select(.OutputKey=="ApplicationSecurityGroupId") | .OutputValue')
+          PRIVATE_DB_SUBNET_B_ID=$(echo "$OUTPUTS" | jq -r \
+            '.[] | select(.OutputKey=="PrivateDBSubnetBId") | .OutputValue')
+
+          LAMBDA_SECURITY_GROUP_ID=$(echo "$OUTPUTS" | jq -r \
+            '.[] | select(.OutputKey=="LambdaSecurityGroupId") | .OutputValue')
 
           if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "null" ]; then
             echo "ERROR: VpcId output is missing from Network Stack."
             exit 1
           fi
 
-          if [ -z "$PRIVATE_DATABASE_SUBNET_IDS" ] || [ "$PRIVATE_DATABASE_SUBNET_IDS" = "null" ]; then
-            echo "ERROR: PrivateDatabaseSubnetIds output is missing from Network Stack."
+          if [ -z "$PRIVATE_DB_SUBNET_A_ID" ] || [ "$PRIVATE_DB_SUBNET_A_ID" = "null" ]; then
+            echo "ERROR: PrivateDBSubnetAId output is missing from Network Stack."
             exit 1
           fi
 
-          if [ -z "$APPLICATION_SECURITY_GROUP_ID" ] || [ "$APPLICATION_SECURITY_GROUP_ID" = "null" ]; then
-            echo "ERROR: ApplicationSecurityGroupId output is missing from Network Stack."
+          if [ -z "$PRIVATE_DB_SUBNET_B_ID" ] || [ "$PRIVATE_DB_SUBNET_B_ID" = "null" ]; then
+            echo "ERROR: PrivateDBSubnetBId output is missing from Network Stack."
+            exit 1
+          fi
+
+          if [ -z "$LAMBDA_SECURITY_GROUP_ID" ] || [ "$LAMBDA_SECURITY_GROUP_ID" = "null" ]; then
+            echo "ERROR: LambdaSecurityGroupId output is missing from Network Stack."
             exit 1
           fi
 
           echo "VPC_ID=$VPC_ID" >> "$GITHUB_ENV"
-          echo "PRIVATE_DATABASE_SUBNET_IDS=$PRIVATE_DATABASE_SUBNET_IDS" >> "$GITHUB_ENV"
-          echo "APPLICATION_SECURITY_GROUP_ID=$APPLICATION_SECURITY_GROUP_ID" >> "$GITHUB_ENV"
+          echo "PRIVATE_DB_SUBNET_A_ID=$PRIVATE_DB_SUBNET_A_ID" >> "$GITHUB_ENV"
+          echo "PRIVATE_DB_SUBNET_B_ID=$PRIVATE_DB_SUBNET_B_ID" >> "$GITHUB_ENV"
+          echo "LAMBDA_SECURITY_GROUP_ID=$LAMBDA_SECURITY_GROUP_ID" >> "$GITHUB_ENV"
 
       # Step 7: Validate Data Stack
       - name: Validate Data Stack
@@ -109,6 +118,6 @@ jobs:
             --parameter-overrides \
               Environment=dev \
               VpcId="$VPC_ID" \
-              PrivateDatabaseSubnetIds="$PRIVATE_DATABASE_SUBNET_IDS" \
-              ApplicationSecurityGroupId="$APPLICATION_SECURITY_GROUP_ID" \
+              PrivateDatabaseSubnetIds="$PRIVATE_DB_SUBNET_A_ID,$PRIVATE_DB_SUBNET_B_ID" \
+              ApplicationSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
             --no-fail-on-empty-changeset
