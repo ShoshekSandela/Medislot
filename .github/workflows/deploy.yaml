@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - network
+      - feature/iam-stack
     paths:
       - 'cloudformation/**'
       - '.github/workflows/deploy.yaml'
