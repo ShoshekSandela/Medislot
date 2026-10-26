@@ -73,7 +73,7 @@ Resources:
       VPCSecurityGroups:
         - !GetAtt DatabaseSecurityGroup.GroupId
       PubliclyAccessible: false
-      BackupRetentionPeriod: 7
+      BackupRetentionPeriod: 1
       AutoMinorVersionUpgrade: true
       Tags:
         - Key: Name
