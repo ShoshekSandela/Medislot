@@ -2,6 +2,10 @@ name: MediSlot Network Stack
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+      - network
 
 permissions:
   id-token: write
@@ -9,6 +13,7 @@ permissions:
 
 jobs:
   validate:
+    name: Validate and Deploy Network Stack
     runs-on: ubuntu-latest
 
     steps:
@@ -21,8 +26,20 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: us-east-1
 
-      - name: Check AWS connection
+      - name: Check AWS Connection
         run: aws sts get-caller-identity
 
-      - name: Validate network Stack
-        run: aws cloudformation validate-template --template-body file://cloudformation/network-stack.yaml --region us-east-1
+      - name: Validate Network Stack
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://cloudformation/network-stack.yaml \
+            --region us-east-1
+
+      - name: Deploy Network Stack
+        run: |
+          aws cloudformation deploy \
+            --template-file cloudformation/network-stack.yaml \
+            --stack-name medslot-network-dev \
+            --region us-east-1 \
+            --parameter-overrides Environment=dev \
+            --no-fail-on-empty-changeset
