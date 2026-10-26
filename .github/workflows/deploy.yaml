@@ -119,5 +119,4 @@ jobs:
               Environment=dev \
               VpcId="$VPC_ID" \
               PrivateDatabaseSubnetIds="$PRIVATE_DB_SUBNET_A_ID,$PRIVATE_DB_SUBNET_B_ID" \
-              ApplicationSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
-            --no-fail-on-empty-changeset
+              ApplicationSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID"
