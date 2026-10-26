@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: MediSlot Milestone 2 IAM Roles
+Description: MediSlot IAM Stack - Lambda execution roles and required permissions
 
 Parameters:
   Environment:
@@ -9,20 +9,26 @@ Parameters:
       - dev
       - test
       - prod
+    Description: Deployment environment name
 
 Resources:
 
+  # 1. Lambda Authorizer
+  # Reads the JWT signing secret and checks whether a token has been revoked.
   AuthorizerLambdaRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-authorizer-role
+      Description: Execution role for the MediSlot API Gateway Lambda Authorizer
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
       ManagedPolicyArns:
         - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
@@ -36,19 +42,37 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/jwt/signing-secret
 
+        - PolicyName: CheckRevokedTokens
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens
+
+  # 2. Authentication Lambda
+  # Supports registration/login/refresh/logout, reads the JWT secret and
+  # accesses the refresh-token table and database credentials.
   AuthLambdaRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-auth-role
+      Description: Execution role for MediSlot authentication operations
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
       ManagedPolicyArns:
         - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        # Required if this Lambda connects to RDS from inside a VPC.
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
       Policies:
         - PolicyName: ReadJwtSigningSecret
           PolicyDocument:
@@ -73,60 +97,89 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-auth-tokens
 
+        - PolicyName: ReadDatabaseCredentials
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                # Keep the permission limited to secrets named for this app/environment.
+                # If your RDS secret has a different name, update this ARN pattern.
+                Resource:
+                  - !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:medislot-${Environment}-*
+
+  # 3. Doctor Lambda execution role
   DoctorLambdaRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-doctor-role
+      Description: Execution role for the MediSlot doctor Lambda
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
       ManagedPolicyArns:
         - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
 
+  # 4. Patient Lambda execution role
   PatientLambdaRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-patient-role
+      Description: Execution role for the MediSlot patient Lambda
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
       ManagedPolicyArns:
         - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
 
+  # 5. Availability Lambda execution role
   AvailabilityLambdaRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-availability-role
+      Description: Execution role for the MediSlot availability Lambda
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
       ManagedPolicyArns:
         - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
 
 Outputs:
   AuthorizerLambdaRoleArn:
+    Description: ARN of the Lambda Authorizer execution role
     Value: !GetAtt AuthorizerLambdaRole.Arn
 
   AuthLambdaRoleArn:
+    Description: ARN of the Authentication Lambda execution role
     Value: !GetAtt AuthLambdaRole.Arn
 
   DoctorLambdaRoleArn:
+    Description: ARN of the Doctor Lambda execution role
     Value: !GetAtt DoctorLambdaRole.Arn
 
   PatientLambdaRoleArn:
+    Description: ARN of the Patient Lambda execution role
     Value: !GetAtt PatientLambdaRole.Arn
 
   AvailabilityLambdaRoleArn:
+    Description: ARN of the Availability Lambda execution role
     Value: !GetAtt AvailabilityLambdaRole.Arn
