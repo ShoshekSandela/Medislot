@@ -77,22 +77,22 @@ jobs:
             '.[] | select(.OutputKey=="LambdaSecurityGroupId") | .OutputValue')
 
           if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "null" ]; then
-            echo "ERROR: VpcId output is missing from Network Stack."
+            echo "ERROR: VpcId output is missing."
             exit 1
           fi
 
           if [ -z "$PRIVATE_DB_SUBNET_A_ID" ] || [ "$PRIVATE_DB_SUBNET_A_ID" = "null" ]; then
-            echo "ERROR: PrivateDBSubnetAId output is missing from Network Stack."
+            echo "ERROR: PrivateDBSubnetAId output is missing."
             exit 1
           fi
 
           if [ -z "$PRIVATE_DB_SUBNET_B_ID" ] || [ "$PRIVATE_DB_SUBNET_B_ID" = "null" ]; then
-            echo "ERROR: PrivateDBSubnetBId output is missing from Network Stack."
+            echo "ERROR: PrivateDBSubnetBId output is missing."
             exit 1
           fi
 
           if [ -z "$LAMBDA_SECURITY_GROUP_ID" ] || [ "$LAMBDA_SECURITY_GROUP_ID" = "null" ]; then
-            echo "ERROR: LambdaSecurityGroupId output is missing from Network Stack."
+            echo "ERROR: LambdaSecurityGroupId output is missing."
             exit 1
           fi
 
@@ -105,14 +105,14 @@ jobs:
       - name: Validate Data Stack
         run: |
           aws cloudformation validate-template \
-            --template-body file://cloudformation/database-stack.yaml \
+            --template-body file://cloudformation/data-stack.yaml \
             --region us-east-1
 
       # Step 8: Deploy Data Stack
       - name: Deploy Data Stack
         run: |
           aws cloudformation deploy \
-            --template-file cloudformation/database-stack.yaml \
+            --template-file cloudformation/data-stack.yaml \
             --stack-name medislot-data-dev \
             --region us-east-1 \
             --parameter-overrides \
