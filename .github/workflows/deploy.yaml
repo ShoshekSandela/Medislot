@@ -39,7 +39,7 @@ jobs:
         run: |
           aws cloudformation deploy \
             --template-file cloudformation/network-stack.yaml \
-            --stack-name medslot-network-dev \
+            --stack-name medislot-network-dev \
             --region us-east-1 \
             --parameter-overrides Environment=dev \
             --no-fail-on-empty-changeset
