@@ -23,11 +23,6 @@ Parameters:
     Type: AWS::EC2::SecurityGroup::Id
     Description: Application security group ID created by the Network Stack
 
-Conditions:
-  IsProduction: !Equals
-    - !Ref Environment
-    - prod
-
 Resources:
 
   # RDS Security Group
@@ -80,10 +75,6 @@ Resources:
       PubliclyAccessible: false
       BackupRetentionPeriod: 7
       AutoMinorVersionUpgrade: true
-      DeletionProtection: !If
-        - IsProduction
-        - true
-        - false
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-mysql
