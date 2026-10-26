@@ -75,14 +75,14 @@ jobs:
           }
 
           VPC_ID=$(get_output VpcId)
-          PRIVATE_DB_SUBNET_A_ID=$(get_output PrivateDBSubnetAId)
-          PRIVATE_DB_SUBNET_B_ID=$(get_output PrivateDBSubnetBId)
+          PRIVATE_SUBNET_A_ID=$(get_output PrivateSubnetAId)
+          PRIVATE_SUBNET_B_ID=$(get_output PrivateSubnetBId)
           LAMBDA_SECURITY_GROUP_ID=$(get_output LambdaSecurityGroupId)
 
           {
             echo "VPC_ID=$VPC_ID"
-            echo "PRIVATE_DB_SUBNET_A_ID=$PRIVATE_DB_SUBNET_A_ID"
-            echo "PRIVATE_DB_SUBNET_B_ID=$PRIVATE_DB_SUBNET_B_ID"
+            echo "PRIVATE_SUBNET_A_ID=$PRIVATE_SUBNET_A_ID"
+            echo "PRIVATE_SUBNET_B_ID=$PRIVATE_SUBNET_B_ID"
             echo "LAMBDA_SECURITY_GROUP_ID=$LAMBDA_SECURITY_GROUP_ID"
           } >> "$GITHUB_ENV"
 
@@ -102,7 +102,7 @@ jobs:
             --parameter-overrides \
               Environment=dev \
               VpcId="$VPC_ID" \
-              PrivateDatabaseSubnetIds="$PRIVATE_DB_SUBNET_A_ID,$PRIVATE_DB_SUBNET_B_ID" \
+              PrivateDatabaseSubnetIds="$PRIVATE_SUBNET_A_ID,$PRIVATE_SUBNET_B_ID" \
               ApplicationSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
             --no-fail-on-empty-changeset
 
