@@ -1,4 +1,4 @@
-name: MediSlot Network Stack
+name: MediSlot Infrastructure Deployment
 
 on:
   workflow_dispatch:
@@ -6,35 +6,43 @@ on:
     branches:
       - main
       - network
+    paths:
+      - 'cloudformation/**'
+      - '.github/workflows/deploy.yaml'
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  validate:
-    name: Validate and Deploy Network Stack
+  deploy:
+    name: Validate and Deploy MediSlot Infrastructure
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      # Step 1: Checkout repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
+      # Step 2: Connect to AWS using OIDC
       - name: Connect to AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: us-east-1
 
+      # Step 3: Verify AWS connection
       - name: Check AWS Connection
         run: aws sts get-caller-identity
 
+      # Step 4: Validate Network Stack
       - name: Validate Network Stack
         run: |
           aws cloudformation validate-template \
             --template-body file://cloudformation/network-stack.yaml \
             --region us-east-1
 
+      # Step 5: Deploy Network Stack
       - name: Deploy Network Stack
         run: |
           aws cloudformation deploy \
@@ -42,4 +50,65 @@ jobs:
             --stack-name medislot-network-dev \
             --region us-east-1 \
             --parameter-overrides Environment=dev \
+            --no-fail-on-empty-changeset
+
+      # Step 6: Get Network Stack Outputs
+      - name: Get Network Resource IDs
+        shell: bash
+        run: |
+          OUTPUTS=$(aws cloudformation describe-stacks \
+            --stack-name medislot-network-dev \
+            --region us-east-1 \
+            --query "Stacks[0].Outputs" \
+            --output json)
+
+          echo "$OUTPUTS"
+
+          VPC_ID=$(echo "$OUTPUTS" | jq -r \
+            '.[] | select(.OutputKey=="VpcId") | .OutputValue')
+
+          PRIVATE_DATABASE_SUBNET_IDS=$(echo "$OUTPUTS" | jq -r \
+            '.[] | select(.OutputKey=="PrivateDatabaseSubnetIds") | .OutputValue')
+
+          APPLICATION_SECURITY_GROUP_ID=$(echo "$OUTPUTS" | jq -r \
+            '.[] | select(.OutputKey=="ApplicationSecurityGroupId") | .OutputValue')
+
+          if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "null" ]; then
+            echo "ERROR: VpcId output is missing from Network Stack."
+            exit 1
+          fi
+
+          if [ -z "$PRIVATE_DATABASE_SUBNET_IDS" ] || [ "$PRIVATE_DATABASE_SUBNET_IDS" = "null" ]; then
+            echo "ERROR: PrivateDatabaseSubnetIds output is missing from Network Stack."
+            exit 1
+          fi
+
+          if [ -z "$APPLICATION_SECURITY_GROUP_ID" ] || [ "$APPLICATION_SECURITY_GROUP_ID" = "null" ]; then
+            echo "ERROR: ApplicationSecurityGroupId output is missing from Network Stack."
+            exit 1
+          fi
+
+          echo "VPC_ID=$VPC_ID" >> "$GITHUB_ENV"
+          echo "PRIVATE_DATABASE_SUBNET_IDS=$PRIVATE_DATABASE_SUBNET_IDS" >> "$GITHUB_ENV"
+          echo "APPLICATION_SECURITY_GROUP_ID=$APPLICATION_SECURITY_GROUP_ID" >> "$GITHUB_ENV"
+
+      # Step 7: Validate Data Stack
+      - name: Validate Data Stack
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://cloudformation/database-stack.yaml \
+            --region us-east-1
+
+      # Step 8: Deploy Data Stack
+      - name: Deploy Data Stack
+        run: |
+          aws cloudformation deploy \
+            --template-file cloudformation/database-stack.yaml \
+            --stack-name medislot-data-dev \
+            --region us-east-1 \
+            --parameter-overrides \
+              Environment=dev \
+              VpcId="$VPC_ID" \
+              PrivateDatabaseSubnetIds="$PRIVATE_DATABASE_SUBNET_IDS" \
+              ApplicationSecurityGroupId="$APPLICATION_SECURITY_GROUP_ID" \
             --no-fail-on-empty-changeset
