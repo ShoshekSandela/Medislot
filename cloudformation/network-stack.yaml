@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: MediSlot Network Stack 
+Description: MediSlot Network Stack
 
 Parameters:
   Environment:
@@ -11,7 +11,6 @@ Parameters:
       - prod
 
 Resources:
-
   # 1. VPC
   MediSlotVPC:
     Type: AWS::EC2::VPC
@@ -37,7 +36,7 @@ Resources:
       VpcId: !Ref MediSlotVPC
       InternetGatewayId: !Ref InternetGateway
 
-  # 3. Public Subnet - Flask Web Application EC2
+  # 3. Public subnet for the Flask dashboard EC2 instance
   PublicSubnet:
     Type: AWS::EC2::Subnet
     Properties:
@@ -51,8 +50,8 @@ Resources:
         - Key: Name
           Value: !Sub medislot-${Environment}-public-subnet
 
-  # 4. Private Application Subnets - Lambda
-  PrivateAppSubnetA:
+  # 4. Private subnet A
+  PrivateSubnetA:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref MediSlotVPC
@@ -62,9 +61,10 @@ Resources:
         - !GetAZs ''
       Tags:
         - Key: Name
-          Value: !Sub medislot-${Environment}-private-app-a
+          Value: !Sub medislot-${Environment}-private-subnet-a
 
-  PrivateAppSubnetB:
+  # 5. Private subnet B
+  PrivateSubnetB:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref MediSlotVPC
@@ -74,34 +74,9 @@ Resources:
         - !GetAZs ''
       Tags:
         - Key: Name
-          Value: !Sub medislot-${Environment}-private-app-b
+          Value: !Sub medislot-${Environment}-private-subnet-b
 
-  # 5. Private Database Subnets - RDS
-  PrivateDBSubnetA:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref MediSlotVPC
-      CidrBlock: 10.0.20.0/24
-      AvailabilityZone: !Select
-        - 0
-        - !GetAZs ''
-      Tags:
-        - Key: Name
-          Value: !Sub medislot-${Environment}-private-db-a
-
-  PrivateDBSubnetB:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref MediSlotVPC
-      CidrBlock: 10.0.21.0/24
-      AvailabilityZone: !Select
-        - 1
-        - !GetAZs ''
-      Tags:
-        - Key: Name
-          Value: !Sub medislot-${Environment}-private-db-b
-
-  # 6. Public Route Table
+  # 6. Public route table
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -124,49 +99,28 @@ Resources:
       SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref PublicRouteTable
 
-  # 7. Private Application Route Table
-  PrivateAppRouteTable:
+  # 7. Shared private route table for private subnet A and B
+  PrivateRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref MediSlotVPC
       Tags:
         - Key: Name
-          Value: !Sub medislot-${Environment}-private-app-rt
+          Value: !Sub medislot-${Environment}-private-rt
 
-  PrivateAppRouteAssociationA:
+  PrivateSubnetRouteAssociationA:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PrivateAppSubnetA
-      RouteTableId: !Ref PrivateAppRouteTable
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
 
-  PrivateAppRouteAssociationB:
+  PrivateSubnetRouteAssociationB:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PrivateAppSubnetB
-      RouteTableId: !Ref PrivateAppRouteTable
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTable
 
-  # 8. Private Database Route Table
-  PrivateDBRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref MediSlotVPC
-      Tags:
-        - Key: Name
-          Value: !Sub medislot-${Environment}-private-db-rt
-
-  PrivateDBRouteAssociationA:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PrivateDBSubnetA
-      RouteTableId: !Ref PrivateDBRouteTable
-
-  PrivateDBRouteAssociationB:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PrivateDBSubnetB
-      RouteTableId: !Ref PrivateDBRouteTable
-
-  # 9. EC2 Security Group
+  # 8. EC2 security group
   EC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -185,7 +139,7 @@ Resources:
         - Key: Name
           Value: !Sub medislot-${Environment}-ec2-sg
 
-  # 10. Lambda Security Group
+  # 9. Lambda security group
   LambdaSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -195,7 +149,7 @@ Resources:
         - Key: Name
           Value: !Sub medislot-${Environment}-lambda-sg
 
-  # 11. RDS Security Group
+  # 10. RDS security group: allow MySQL only from Lambda security group
   RDSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -210,7 +164,7 @@ Resources:
         - Key: Name
           Value: !Sub medislot-${Environment}-rds-sg
 
-  # 12. VPC Endpoint Security Group
+  # 11. VPC endpoint security group
   EndpointSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -225,7 +179,7 @@ Resources:
         - Key: Name
           Value: !Sub medislot-${Environment}-endpoint-sg
 
-  # 13. S3 Gateway Endpoint
+  # 12. S3 gateway endpoint
   S3Endpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
@@ -233,10 +187,9 @@ Resources:
       ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
       VpcEndpointType: Gateway
       RouteTableIds:
-        - !Ref PrivateAppRouteTable
-        - !Ref PrivateDBRouteTable
+        - !Ref PrivateRouteTable
 
-  # 14. DynamoDB Gateway Endpoint
+  # 13. DynamoDB gateway endpoint
   DynamoDBEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
@@ -244,10 +197,9 @@ Resources:
       ServiceName: !Sub com.amazonaws.${AWS::Region}.dynamodb
       VpcEndpointType: Gateway
       RouteTableIds:
-        - !Ref PrivateAppRouteTable
-        - !Ref PrivateDBRouteTable
+        - !Ref PrivateRouteTable
 
-  # 15. SSM Interface Endpoint
+  # 14. SSM interface endpoint
   SSMEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
@@ -256,12 +208,12 @@ Resources:
       VpcEndpointType: Interface
       PrivateDnsEnabled: true
       SubnetIds:
-        - !Ref PrivateAppSubnetA
-        - !Ref PrivateAppSubnetB
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
       SecurityGroupIds:
         - !Ref EndpointSecurityGroup
 
-  # 16. CloudWatch Logs Interface Endpoint
+  # 15. CloudWatch Logs interface endpoint
   LogsEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
@@ -270,13 +222,12 @@ Resources:
       VpcEndpointType: Interface
       PrivateDnsEnabled: true
       SubnetIds:
-        - !Ref PrivateAppSubnetA
-        - !Ref PrivateAppSubnetB
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
       SecurityGroupIds:
         - !Ref EndpointSecurityGroup
 
 Outputs:
-
   VpcId:
     Description: MediSlot VPC ID
     Value: !Ref MediSlotVPC
@@ -289,29 +240,17 @@ Outputs:
     Export:
       Name: !Sub medislot-${Environment}-PublicSubnetId
 
-  PrivateAppSubnetAId:
-    Description: Private application subnet A
-    Value: !Ref PrivateAppSubnetA
+  PrivateSubnetAId:
+    Description: Private subnet A for application and database resources
+    Value: !Ref PrivateSubnetA
     Export:
-      Name: !Sub medislot-${Environment}-PrivateAppSubnetAId
+      Name: !Sub medislot-${Environment}-PrivateSubnetAId
 
-  PrivateAppSubnetBId:
-    Description: Private application subnet B
-    Value: !Ref PrivateAppSubnetB
+  PrivateSubnetBId:
+    Description: Private subnet B for application and database resources
+    Value: !Ref PrivateSubnetB
     Export:
-      Name: !Sub medislot-${Environment}-PrivateAppSubnetBId
-
-  PrivateDBSubnetAId:
-    Description: Private database subnet A
-    Value: !Ref PrivateDBSubnetA
-    Export:
-      Name: !Sub medislot-${Environment}-PrivateDBSubnetAId
-
-  PrivateDBSubnetBId:
-    Description: Private database subnet B
-    Value: !Ref PrivateDBSubnetB
-    Export:
-      Name: !Sub medislot-${Environment}-PrivateDBSubnetBId
+      Name: !Sub medislot-${Environment}-PrivateSubnetBId
 
   EC2SecurityGroupId:
     Description: EC2 web server security group
