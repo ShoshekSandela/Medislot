@@ -1,4 +1,4 @@
-name: MediSlot Data Stack
+name: MediSlot Network Stack
 
 on:
   workflow_dispatch:
@@ -24,5 +24,5 @@ jobs:
       - name: Check AWS connection
         run: aws sts get-caller-identity
 
-      - name: Validate Data Stack
-        run: aws cloudformation validate-template --template-body file://cloudformation/data-stack.yaml --region us-east-1
+      - name: Validate network Stack
+        run: aws cloudformation validate-template --template-body file://cloudformation/network-stack.yaml --region us-east-1
