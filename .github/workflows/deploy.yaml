@@ -14,109 +14,112 @@ permissions:
   id-token: write
   contents: read
 
+env:
+  AWS_REGION: us-east-1
+  NETWORK_STACK_NAME: medislot-network-dev
+  DATA_STACK_NAME: medislot-data-dev
+  CLOUDFORMATION_EXECUTION_ROLE_ARN: arn:aws:iam::008929113951:role/MediSlot-CloudFormation-Execution-Role
+
 jobs:
   deploy:
     name: Validate and Deploy MediSlot Infrastructure
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout repository
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Step 2: Connect to AWS using OIDC
       - name: Connect to AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: us-east-1
+          aws-region: ${{ env.AWS_REGION }}
 
-      # Step 3: Verify AWS connection
       - name: Check AWS Connection
         run: aws sts get-caller-identity
 
-      # Step 4: Validate Network Stack
+      # Deploy the Network Stack first.
       - name: Validate Network Stack
         run: |
           aws cloudformation validate-template \
             --template-body file://cloudformation/network-stack.yaml \
-            --region us-east-1
+            --region "$AWS_REGION"
 
-      # Step 5: Deploy Network Stack
       - name: Deploy Network Stack
         run: |
           aws cloudformation deploy \
             --template-file cloudformation/network-stack.yaml \
-            --stack-name medislot-network-dev \
-            --region us-east-1 \
+            --stack-name "$NETWORK_STACK_NAME" \
+            --region "$AWS_REGION" \
             --parameter-overrides Environment=dev \
+            --role-arn "$CLOUDFORMATION_EXECUTION_ROLE_ARN" \
             --no-fail-on-empty-changeset
 
-      # Step 6: Get Network Stack Outputs
+      # Read the outputs from the Network Stack for the Data Stack.
       - name: Get Network Resource IDs
         shell: bash
         run: |
+          set -euo pipefail
+
           OUTPUTS=$(aws cloudformation describe-stacks \
-            --stack-name medislot-network-dev \
-            --region us-east-1 \
+            --stack-name "$NETWORK_STACK_NAME" \
+            --region "$AWS_REGION" \
             --query "Stacks[0].Outputs" \
             --output json)
 
           echo "$OUTPUTS"
 
-          VPC_ID=$(echo "$OUTPUTS" | jq -r \
-            '.[] | select(.OutputKey=="VpcId") | .OutputValue')
+          get_output() {
+            echo "$OUTPUTS" | jq -er --arg key "$1" \
+              '.[] | select(.OutputKey == $key) | .OutputValue'
+          }
 
-          PRIVATE_DB_SUBNET_A_ID=$(echo "$OUTPUTS" | jq -r \
-            '.[] | select(.OutputKey=="PrivateDBSubnetAId") | .OutputValue')
+          VPC_ID=$(get_output VpcId)
+          PRIVATE_DB_SUBNET_A_ID=$(get_output PrivateDBSubnetAId)
+          PRIVATE_DB_SUBNET_B_ID=$(get_output PrivateDBSubnetBId)
+          LAMBDA_SECURITY_GROUP_ID=$(get_output LambdaSecurityGroupId)
 
-          PRIVATE_DB_SUBNET_B_ID=$(echo "$OUTPUTS" | jq -r \
-            '.[] | select(.OutputKey=="PrivateDBSubnetBId") | .OutputValue')
+          {
+            echo "VPC_ID=$VPC_ID"
+            echo "PRIVATE_DB_SUBNET_A_ID=$PRIVATE_DB_SUBNET_A_ID"
+            echo "PRIVATE_DB_SUBNET_B_ID=$PRIVATE_DB_SUBNET_B_ID"
+            echo "LAMBDA_SECURITY_GROUP_ID=$LAMBDA_SECURITY_GROUP_ID"
+          } >> "$GITHUB_ENV"
 
-          LAMBDA_SECURITY_GROUP_ID=$(echo "$OUTPUTS" | jq -r \
-            '.[] | select(.OutputKey=="LambdaSecurityGroupId") | .OutputValue')
-
-          if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "null" ]; then
-            echo "ERROR: VpcId output is missing."
-            exit 1
-          fi
-
-          if [ -z "$PRIVATE_DB_SUBNET_A_ID" ] || [ "$PRIVATE_DB_SUBNET_A_ID" = "null" ]; then
-            echo "ERROR: PrivateDBSubnetAId output is missing."
-            exit 1
-          fi
-
-          if [ -z "$PRIVATE_DB_SUBNET_B_ID" ] || [ "$PRIVATE_DB_SUBNET_B_ID" = "null" ]; then
-            echo "ERROR: PrivateDBSubnetBId output is missing."
-            exit 1
-          fi
-
-          if [ -z "$LAMBDA_SECURITY_GROUP_ID" ] || [ "$LAMBDA_SECURITY_GROUP_ID" = "null" ]; then
-            echo "ERROR: LambdaSecurityGroupId output is missing."
-            exit 1
-          fi
-
-          echo "VPC_ID=$VPC_ID" >> "$GITHUB_ENV"
-          echo "PRIVATE_DB_SUBNET_A_ID=$PRIVATE_DB_SUBNET_A_ID" >> "$GITHUB_ENV"
-          echo "PRIVATE_DB_SUBNET_B_ID=$PRIVATE_DB_SUBNET_B_ID" >> "$GITHUB_ENV"
-          echo "LAMBDA_SECURITY_GROUP_ID=$LAMBDA_SECURITY_GROUP_ID" >> "$GITHUB_ENV"
-
-      # Step 7: Validate Data Stack
+      # Deploy the Data Stack only after the Network Stack succeeds.
       - name: Validate Data Stack
         run: |
           aws cloudformation validate-template \
             --template-body file://cloudformation/data-stack.yaml \
-            --region us-east-1
+            --region "$AWS_REGION"
 
-      # Step 8: Deploy Data Stack
       - name: Deploy Data Stack
         run: |
           aws cloudformation deploy \
             --template-file cloudformation/data-stack.yaml \
-            --stack-name medislot-data-dev \
-            --region us-east-1 \
+            --stack-name "$DATA_STACK_NAME" \
+            --region "$AWS_REGION" \
             --parameter-overrides \
               Environment=dev \
               VpcId="$VPC_ID" \
               PrivateDatabaseSubnetIds="$PRIVATE_DB_SUBNET_A_ID,$PRIVATE_DB_SUBNET_B_ID" \
-              ApplicationSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID"
+              ApplicationSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
+            --role-arn "$CLOUDFORMATION_EXECUTION_ROLE_ARN" \
+            --no-fail-on-empty-changeset
+
+      - name: Display Stack Status
+        if: always()
+        run: |
+          echo "Network Stack:"
+          aws cloudformation describe-stacks \
+            --stack-name "$NETWORK_STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].[StackName,StackStatus]" \
+            --output table || true
+
+          echo "Data Stack:"
+          aws cloudformation describe-stacks \
+            --stack-name "$DATA_STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].[StackName,StackStatus]" \
+            --output table || true
