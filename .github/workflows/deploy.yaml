@@ -18,6 +18,7 @@ env:
   AWS_REGION: us-east-1
   NETWORK_STACK_NAME: medislot-network-dev
   DATA_STACK_NAME: medislot-data-dev
+  IAM_STACK_NAME: medislot-iam-dev
 
 jobs:
   deploy:
@@ -104,6 +105,23 @@ jobs:
               ApplicationSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
             --no-fail-on-empty-changeset
 
+      # Deploy IAM roles after the infrastructure resources.
+      - name: Validate IAM Stack
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://cloudformation/iam-stack.yaml \
+            --region "$AWS_REGION"
+
+      - name: Deploy IAM Stack
+        run: |
+          aws cloudformation deploy \
+            --template-file cloudformation/iam-stack.yaml \
+            --stack-name "$IAM_STACK_NAME" \
+            --region "$AWS_REGION" \
+            --parameter-overrides Environment=dev \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
       - name: Display Stack Status
         if: always()
         run: |
@@ -117,6 +135,13 @@ jobs:
           echo "Data Stack:"
           aws cloudformation describe-stacks \
             --stack-name "$DATA_STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].[StackName,StackStatus]" \
+            --output table || true
+
+          echo "IAM Stack:"
+          aws cloudformation describe-stacks \
+            --stack-name "$IAM_STACK_NAME" \
             --region "$AWS_REGION" \
             --query "Stacks[0].[StackName,StackStatus]" \
             --output table || true
