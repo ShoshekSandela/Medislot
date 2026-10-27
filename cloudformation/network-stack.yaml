@@ -213,7 +213,21 @@ Resources:
       SecurityGroupIds:
         - !Ref EndpointSecurityGroup
 
-  # 15. CloudWatch Logs interface endpoint
+  # 15. Secrets Manager interface endpoint (private Lambdas need this without NAT)
+  SecretsManagerEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref MediSlotVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.secretsmanager
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  # 16. CloudWatch Logs interface endpoint
   LogsEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:

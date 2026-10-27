@@ -343,7 +343,7 @@ Resources:
       SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/authorizers/*
 
   # Deploy API Gateway
-  MediSlotApiDeployment:
+  MediSlotApiDeploymentV2:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - AuthMethod

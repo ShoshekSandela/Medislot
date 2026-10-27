@@ -175,8 +175,8 @@ def register(event, role):
     data = parse_body(event)
     email = data.get("email")
     password = data.get("password")
-    first_name = data.get("first_name")
-    last_name = data.get("last_name", "")
+    first_name = data.get("first_name", data.get("firstName"))
+    last_name = data.get("last_name", data.get("lastName", ""))
 
     if not isinstance(email, str) or not email.strip() or len(email) > 255:
         return response(400, {"message": "A valid email is required"})
