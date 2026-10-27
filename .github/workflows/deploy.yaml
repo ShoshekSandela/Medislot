@@ -157,42 +157,39 @@ jobs:
             --template-body file://cloudformation/application-stack.yaml \
             --region "$AWS_REGION"
 
+      
       - name: Deploy Application Stack
         shell: bash
         run: |
           set -euo pipefail
 
-          : "${{ vars.LAMBDA_CODE_BUCKET }}"
-          : "${{ vars.LAMBDA_CODE_KEY }}"
-          : "${{ vars.AUTH_LAMBDA_ROLE_ARN }}"
-          : "${{ vars.AUTHORIZER_LAMBDA_ROLE_ARN }}"
-          : "${{ vars.DOCTOR_LAMBDA_ROLE_ARN }}"
-          : "${{ vars.PATIENT_LAMBDA_ROLE_ARN }}"
-          : "${{ vars.DATABASE_SECRET_ARN }}"
-          : "${{ vars.DATABASE_HOST }}"
-          : "${{ vars.AUTH_TOKENS_TABLE_NAME }}"
-          : "${{ vars.JWT_SECRET_PARAMETER }}"
+          DATA=$(aws cloudformation describe-stacks --stack-name "$DATA_STACK_NAME" --region "$AWS_REGION" --query 'Stacks[0].Outputs' --output json)
+          IAM=$(aws cloudformation describe-stacks --stack-name "$IAM_STACK_NAME" --region "$AWS_REGION" --query 'Stacks[0].Outputs' --output json)
+
+          output() { printf '%s' "$1" | jq -er --arg key "$2" '.[] | select(.OutputKey == $key) | .OutputValue'; }
+
+          BUCKET=$(output "$DATA" ApplicationFilesBucketName)
+          DB_HOST=$(output "$DATA" DatabaseEndpoint)
+          DB_SECRET=$(output "$DATA" DatabaseSecretArn)
+          TOKENS=$(output "$DATA" AuthTokensTableName)
+
+          zip -qr "$RUNNER_TEMP/medislot-lambdas.zip" lambdas/
+          aws s3 cp "$RUNNER_TEMP/medislot-lambdas.zip" "s3://$BUCKET/medislot-lambdas.zip"
 
           aws cloudformation deploy \
             --template-file cloudformation/application-stack.yaml \
             --stack-name "$APPLICATION_STACK_NAME" \
             --region "$AWS_REGION" \
-            --parameter-overrides \
-              Environment=dev \
-              LambdaCodeBucket="${{ vars.LAMBDA_CODE_BUCKET }}" \
-              LambdaCodeKey="${{ vars.LAMBDA_CODE_KEY }}" \
-              PrivateSubnetAId="$PRIVATE_SUBNET_A_ID" \
-              PrivateSubnetBId="$PRIVATE_SUBNET_B_ID" \
+            --parameter-overrides Environment=dev \
+              LambdaCodeBucket="$BUCKET" LambdaCodeKey=medislot-lambdas.zip \
+              PrivateSubnetAId="$PRIVATE_SUBNET_A_ID" PrivateSubnetBId="$PRIVATE_SUBNET_B_ID" \
               LambdaSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
-              AuthLambdaRoleArn="${{ vars.AUTH_LAMBDA_ROLE_ARN }}" \
-              AuthorizerLambdaRoleArn="${{ vars.AUTHORIZER_LAMBDA_ROLE_ARN }}" \
-              DoctorLambdaRoleArn="${{ vars.DOCTOR_LAMBDA_ROLE_ARN }}" \
-              PatientLambdaRoleArn="${{ vars.PATIENT_LAMBDA_ROLE_ARN }}" \
-              DatabaseSecretArn="${{ vars.DATABASE_SECRET_ARN }}" \
-              DatabaseHost="${{ vars.DATABASE_HOST }}" \
-              DatabaseName=medislot \
-              AuthTokensTableName="${{ vars.AUTH_TOKENS_TABLE_NAME }}" \
-              JwtSecretParameter="${{ vars.JWT_SECRET_PARAMETER }}" \
+              AuthLambdaRoleArn="$(output "$IAM" AuthLambdaRoleArn)" \
+              AuthorizerLambdaRoleArn="$(output "$IAM" AuthorizerLambdaRoleArn)" \
+              DoctorLambdaRoleArn="$(output "$IAM" DoctorLambdaRoleArn)" \
+              PatientLambdaRoleArn="$(output "$IAM" PatientLambdaRoleArn)" \
+              DatabaseSecretArn="$DB_SECRET" DatabaseHost="$DB_HOST" \
+              DatabaseName=medislot AuthTokensTableName="$TOKENS" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
