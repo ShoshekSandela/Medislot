@@ -101,8 +101,8 @@ jobs:
             --region "$AWS_REGION" \
             --parameter-overrides \
               Environment=dev \
-              VpcId="${{ vars.VPC_ID }}" \
-              PrivateDatabaseSubnetIds="${{ vars.PRIVATE_DATABASE_SUBNET_IDS }}" \
+              VpcId="$VPC_ID" \
+              PrivateDatabaseSubnetIds="$PRIVATE_SUBNET_A_ID,$PRIVATE_SUBNET_B_ID" \
               ApplicationSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
             --no-fail-on-empty-changeset
 

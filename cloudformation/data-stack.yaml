@@ -1,6 +1,3 @@
-AWSTemplateFormatVersion: '2010-09-09'
-Description: MediSlot Data Stack - RDS MySQL, DynamoDB and S3
-
 Parameters:
   Environment:
     Type: String
@@ -9,7 +6,6 @@ Parameters:
       - dev
       - test
       - prod
-    Description: Deployment environment
 
   VpcId:
     Type: AWS::EC2::VPC::Id
@@ -17,11 +13,11 @@ Parameters:
 
   PrivateDatabaseSubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
-    Description: Private database subnet IDs created by the Network Stack
+    Description: Private database subnet IDs
 
   ApplicationSecurityGroupId:
     Type: AWS::EC2::SecurityGroup::Id
-    Description: Application security group ID created by the Network Stack
+    Description: Application security group ID
 
 Resources:
 
