@@ -1,3 +1,4 @@
+
 name: MediSlot Infrastructure Deployment
 
 on:
@@ -11,6 +12,7 @@ on:
       - 'cloudformation/**'
       - 'lambdas/**'
       - 'database/**'
+      - 'requirements.txt'
       - '.github/workflows/deploy.yaml'
 
 permissions:
@@ -157,7 +159,6 @@ jobs:
             --template-body file://cloudformation/application-stack.yaml \
             --region "$AWS_REGION"
 
-      
       - name: Set up Python for Lambda packaging
         uses: actions/setup-python@v5
         with:
@@ -170,10 +171,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          DATA=$(aws cloudformation describe-stacks --stack-name "$DATA_STACK_NAME" --region "$AWS_REGION" --query 'Stacks[0].Outputs' --output json)
-          IAM=$(aws cloudformation describe-stacks --stack-name "$IAM_STACK_NAME" --region "$AWS_REGION" --query 'Stacks[0].Outputs' --output json)
+          DATA=$(aws cloudformation describe-stacks \
+            --stack-name "$DATA_STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].Outputs' \
+            --output json)
 
-          output() { printf '%s' "$1" | jq -er --arg key "$2" '.[] | select(.OutputKey == $key) | .OutputValue'; }
+          IAM=$(aws cloudformation describe-stacks \
+            --stack-name "$IAM_STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].Outputs' \
+            --output json)
+
+          output() {
+            printf '%s' "$1" | jq -er --arg key "$2" \
+              '.[] | select(.OutputKey == $key) | .OutputValue'
+          }
 
           BUCKET=$(output "$DATA" ApplicationFilesBucketName)
           DB_HOST=$(output "$DATA" DatabaseEndpoint)
@@ -181,11 +194,11 @@ jobs:
           TOKENS=$(output "$DATA" AuthTokensTableName)
 
           # Create/update the JWT SecureString from a GitHub Actions secret.
-          # Configure repository secret JWT_SIGNING_SECRET before running this workflow.
           if [ -z "$JWT_SIGNING_SECRET" ]; then
             echo "ERROR: Add repository secret JWT_SIGNING_SECRET before deployment."
             exit 1
           fi
+
           aws ssm put-parameter \
             --name "/medislot/dev/jwt/signing-secret" \
             --type SecureString \
@@ -195,27 +208,65 @@ jobs:
 
           # Package Lambda code with its Python dependencies.
           PACKAGE_DIR="$RUNNER_TEMP/medislot-lambda-package"
-          mkdir -p "$PACKAGE_DIR"
-          cp -r lambdas "$PACKAGE_DIR/"
-          python -m pip install --upgrade pip
-          python -m pip install --target "$PACKAGE_DIR" -r requirements.txt
-          (cd "$PACKAGE_DIR" && zip -qr "$RUNNER_TEMP/medislot-lambdas.zip" .)
-          aws s3 cp "$RUNNER_TEMP/medislot-lambdas.zip" "s3://$BUCKET/medislot-lambdas.zip"
 
+          rm -rf "$PACKAGE_DIR"
+          mkdir -p "$PACKAGE_DIR"
+
+          # Copy all Lambda source code.
+          cp -r lambdas "$PACKAGE_DIR/"
+
+          # Install dependencies at the ZIP root.
+          python -m pip install --upgrade pip
+          python -m pip install \
+            --target "$PACKAGE_DIR" \
+            -r requirements.txt
+
+          # Verify that PyMySQL is included.
+          if [ ! -d "$PACKAGE_DIR/pymysql" ]; then
+            echo "ERROR: PyMySQL is missing from the Lambda package."
+            exit 1
+          fi
+
+          echo "PyMySQL dependency verified."
+
+          # Verify that the Doctor Lambda source exists.
+          if [ ! -f "$PACKAGE_DIR/lambdas/doctor/doctor.py" ]; then
+            echo "ERROR: Doctor Lambda source file was not found."
+            exit 1
+          fi
+
+          # Create the deployment ZIP.
+          (cd "$PACKAGE_DIR" && zip -qr "$RUNNER_TEMP/medislot-lambdas.zip" .)
+
+          # Upload using a unique key so CloudFormation can detect code changes.
+          LAMBDA_CODE_KEY="medislot-lambdas-${GITHUB_SHA}.zip"
+
+          aws s3 cp \
+            "$RUNNER_TEMP/medislot-lambdas.zip" \
+            "s3://$BUCKET/$LAMBDA_CODE_KEY"
+
+          echo "Lambda package uploaded: $LAMBDA_CODE_KEY"
+
+          # Deploy the application stack.
           aws cloudformation deploy \
             --template-file cloudformation/application-stack.yaml \
             --stack-name "$APPLICATION_STACK_NAME" \
             --region "$AWS_REGION" \
-            --parameter-overrides Environment=dev \
-              LambdaCodeBucket="$BUCKET" LambdaCodeKey=medislot-lambdas.zip \
-              PrivateSubnetAId="$PRIVATE_SUBNET_A_ID" PrivateSubnetBId="$PRIVATE_SUBNET_B_ID" \
+            --parameter-overrides \
+              Environment=dev \
+              LambdaCodeBucket="$BUCKET" \
+              LambdaCodeKey="$LAMBDA_CODE_KEY" \
+              PrivateSubnetAId="$PRIVATE_SUBNET_A_ID" \
+              PrivateSubnetBId="$PRIVATE_SUBNET_B_ID" \
               LambdaSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
               AuthLambdaRoleArn="$(output "$IAM" AuthLambdaRoleArn)" \
               AuthorizerLambdaRoleArn="$(output "$IAM" AuthorizerLambdaRoleArn)" \
               DoctorLambdaRoleArn="$(output "$IAM" DoctorLambdaRoleArn)" \
               PatientLambdaRoleArn="$(output "$IAM" PatientLambdaRoleArn)" \
-              DatabaseSecretArn="$DB_SECRET" DatabaseHost="$DB_HOST" \
-              DatabaseName=medislot AuthTokensTableName="$TOKENS" \
+              DatabaseSecretArn="$DB_SECRET" \
+              DatabaseHost="$DB_HOST" \
+              DatabaseName=medislot \
+              AuthTokensTableName="$TOKENS" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
@@ -231,6 +282,7 @@ jobs:
           do
             echo "======================================"
             echo "Stack: $STACK"
+
             aws cloudformation describe-stacks \
               --stack-name "$STACK" \
               --region "$AWS_REGION" \
