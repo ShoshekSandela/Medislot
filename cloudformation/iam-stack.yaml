@@ -100,10 +100,8 @@ Resources:
                 Action:
                   - secretsmanager:GetSecretValue
                 Resource:
-                  # Expected secret name prefix: medislot-dev-, medislot-test-, or medislot-prod-.
-                  - !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:medislot-${Environment}-*
+                  - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:rds!db-2c4bef40-f0a0-404e-8f88-6f4b93b4877a-*'
 
-  
   # 3. Doctor Lambda execution role
   DoctorLambdaRole:
     Type: AWS::IAM::Role
@@ -130,7 +128,7 @@ Resources:
                 Action:
                   - secretsmanager:GetSecretValue
                 Resource:
-                  - !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:rds!db-2c4bef40-f0a0-404e-8f88-6f4b93b4877a-*
+                  - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:rds!db-2c4bef40-f0a0-404e-8f88-6f4b93b4877a-*'
 
   # 4. Patient Lambda execution role
   PatientLambdaRole:
