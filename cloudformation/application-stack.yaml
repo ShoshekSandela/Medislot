@@ -1,0 +1,357 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: MediSlot Application Stack - Lambda Functions and API Gateway
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+
+  LambdaCodeBucket:
+    Type: String
+    Description: S3 bucket containing the packaged MediSlot Lambda code
+
+  LambdaCodeKey:
+    Type: String
+    Description: S3 object key for the packaged Lambda ZIP file
+
+  PrivateSubnetAId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private application subnet A
+
+  PrivateSubnetBId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Private application subnet B
+
+  LambdaSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Existing Lambda security group
+
+  AuthLambdaRoleArn:
+    Type: String
+    Description: ARN of the authentication Lambda execution role
+
+  AuthorizerLambdaRoleArn:
+    Type: String
+    Description: ARN of the authorizer Lambda execution role
+
+  DoctorLambdaRoleArn:
+    Type: String
+    Description: ARN of the doctor Lambda execution role
+
+  PatientLambdaRoleArn:
+    Type: String
+    Description: ARN of the patient Lambda execution role
+
+  DatabaseSecretArn:
+    Type: String
+    Description: ARN of the RDS-managed database credentials secret
+
+  DatabaseHost:
+    Type: String
+    Description: RDS MySQL endpoint address
+
+  DatabaseName:
+    Type: String
+    Default: medislot
+
+  AuthTokensTableName:
+    Type: String
+    Description: DynamoDB authentication tokens table
+
+  JwtSecretParameter:
+    Type: String
+    Default: /medislot/dev/jwt/signing-secret
+    Description: SSM Parameter Store name for the JWT signing secret
+
+Resources:
+
+  # Authentication Lambda
+  AuthenticationLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-authentication
+      Description: Handles MediSlot registration, login, refresh and logout
+      Runtime: python3.12
+      Handler: lambdas.authentication.authentication.lambda_handler
+      Role: !Ref AuthLambdaRoleArn
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      MemorySize: 256
+      Timeout: 30
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnetAId
+          - !Ref PrivateSubnetBId
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_SECRET_ARN: !Ref DatabaseSecretArn
+          DB_HOST: !Ref DatabaseHost
+          DB_NAME: !Ref DatabaseName
+          AUTH_TOKENS_TABLE: !Ref AuthTokensTableName
+          JWT_SECRET_PARAMETER: !Ref JwtSecretParameter
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  # JWT Authorizer Lambda
+  AuthorizerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-authorizer
+      Description: Validates MediSlot access tokens
+      Runtime: python3.12
+      Handler: lambdas.authorizer.authorizer.lambda_handler
+      Role: !Ref AuthorizerLambdaRoleArn
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      MemorySize: 128
+      Timeout: 10
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnetAId
+          - !Ref PrivateSubnetBId
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          AUTH_TOKENS_TABLE: !Ref AuthTokensTableName
+          JWT_SECRET_PARAMETER: !Ref JwtSecretParameter
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  # Doctor Lambda
+  DoctorLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-doctor
+      Description: Handles MediSlot doctor profile operations
+      Runtime: python3.12
+      Handler: lambdas.doctor.doctor.lambda_handler
+      Role: !Ref DoctorLambdaRoleArn
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      MemorySize: 256
+      Timeout: 30
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnetAId
+          - !Ref PrivateSubnetBId
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_SECRET_ARN: !Ref DatabaseSecretArn
+          DB_HOST: !Ref DatabaseHost
+          DB_NAME: !Ref DatabaseName
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  # Patient Lambda
+  PatientLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-patient
+      Description: Handles MediSlot patient profile operations
+      Runtime: python3.12
+      Handler: lambdas.patient.patient.lambda_handler
+      Role: !Ref PatientLambdaRoleArn
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      MemorySize: 256
+      Timeout: 30
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnetAId
+          - !Ref PrivateSubnetBId
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_SECRET_ARN: !Ref DatabaseSecretArn
+          DB_HOST: !Ref DatabaseHost
+          DB_NAME: !Ref DatabaseName
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  # API Gateway REST API
+  MediSlotApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub medislot-${Environment}-api
+      Description: MediSlot REST API
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  # API Gateway Authorizer
+  MediSlotApiAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: MediSlotJwtAuthorizer
+      RestApiId: !Ref MediSlotApi
+      Type: TOKEN
+      IdentitySource: method.request.header.Authorization
+      AuthorizerResultTtlInSeconds: 0
+      AuthorizerUri: !Sub
+        - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+        - FunctionArn: !GetAtt AuthorizerLambda.Arn
+
+  # /auth
+  AuthResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ParentId: !GetAtt MediSlotApi.RootResourceId
+      PathPart: auth
+
+  AuthMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref AuthResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt AuthenticationLambda.Arn
+
+  # /doctors
+  DoctorsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ParentId: !GetAtt MediSlotApi.RootResourceId
+      PathPart: doctors
+
+  DoctorsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref DoctorsResource
+      HttpMethod: ANY
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref MediSlotApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt DoctorLambda.Arn
+
+  # /patients
+  PatientsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ParentId: !GetAtt MediSlotApi.RootResourceId
+      PathPart: patients
+
+  PatientsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref PatientsResource
+      HttpMethod: ANY
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref MediSlotApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt PatientLambda.Arn
+
+  # Allow API Gateway to invoke Authentication Lambda
+  AuthenticationApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AuthenticationLambda
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/*/auth
+
+  # Allow API Gateway to invoke Doctor Lambda
+  DoctorApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DoctorLambda
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/*/doctors
+
+  # Allow API Gateway to invoke Patient Lambda
+  PatientApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref PatientLambda
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/*/patients
+
+  # Allow API Gateway to invoke the Authorizer Lambda
+  AuthorizerApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AuthorizerLambda
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/authorizers/*
+
+  # Deploy API Gateway
+  MediSlotApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - AuthMethod
+      - DoctorsMethod
+      - PatientsMethod
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      StageName: !Ref Environment
+
+Outputs:
+  ApiId:
+    Description: MediSlot API Gateway ID
+    Value: !Ref MediSlotApi
+
+  ApiBaseUrl:
+    Description: MediSlot API base URL
+    Value: !Sub https://${MediSlotApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}
+
+  AuthenticationLambdaArn:
+    Description: Authentication Lambda ARN
+    Value: !GetAtt AuthenticationLambda.Arn
+
+  AuthorizerLambdaArn:
+    Description: Authorizer Lambda ARN
+    Value: !GetAtt AuthorizerLambda.Arn
+
+  DoctorLambdaArn:
+    Description: Doctor Lambda ARN
+    Value: !GetAtt DoctorLambda.Arn
+
+  PatientLambdaArn:
+    Description: Patient Lambda ARN
+    Value: !GetAtt PatientLambda.Arn
