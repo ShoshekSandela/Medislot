@@ -30,11 +30,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout repository
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 2. Connect to AWS
       - name: Connect to AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -44,14 +42,12 @@ jobs:
       - name: Check AWS Connection
         run: aws sts get-caller-identity
 
-      # 3. Validate Network Stack
       - name: Validate Network Stack
         run: |
           aws cloudformation validate-template \
             --template-body file://cloudformation/network-stack.yaml \
             --region "$AWS_REGION"
 
-      # 4. Deploy Network Stack
       - name: Deploy Network Stack
         run: |
           aws cloudformation deploy \
@@ -61,7 +57,6 @@ jobs:
             --parameter-overrides Environment=dev \
             --no-fail-on-empty-changeset
 
-      # 5. Retrieve Network Outputs
       - name: Get Network Resource IDs
         shell: bash
         run: |
@@ -74,27 +69,61 @@ jobs:
             --output json)
 
           get_output() {
-            echo "$OUTPUTS" | jq -er \
-              --arg key "$1" \
+            echo "$OUTPUTS" | jq -er --arg key "$1" \
               '.[] | select(.OutputKey == $key) | .OutputValue'
           }
 
+          VPC_ID=$(get_output VpcId)
+          PRIVATE_SUBNET_A_ID=$(get_output PrivateSubnetAId)
+          PRIVATE_SUBNET_B_ID=$(get_output PrivateSubnetBId)
+          LAMBDA_SECURITY_GROUP_ID=$(get_output LambdaSecurityGroupId)
+
           {
-            echo "PRIVATE_SUBNET_A_ID=$(get_output PrivateSubnetAId)"
-            echo "PRIVATE_SUBNET_B_ID=$(get_output PrivateSubnetBId)"
-            echo "LAMBDA_SECURITY_GROUP_ID=$(get_output LambdaSecurityGroupId)"
+            echo "VPC_ID=$VPC_ID"
+            echo "PRIVATE_SUBNET_A_ID=$PRIVATE_SUBNET_A_ID"
+            echo "PRIVATE_SUBNET_B_ID=$PRIVATE_SUBNET_B_ID"
+            echo "LAMBDA_SECURITY_GROUP_ID=$LAMBDA_SECURITY_GROUP_ID"
           } >> "$GITHUB_ENV"
 
-      # 6. Validate Data Stack
       - name: Validate Data Stack
         run: |
           aws cloudformation validate-template \
             --template-body file://cloudformation/data-stack.yaml \
             --region "$AWS_REGION"
 
-      # 7. Deploy Data Stack
-      - name: Deploy Data Stack
+      - name: Check Data Stack Parameters
+        shell: bash
         run: |
+          set -euo pipefail
+
+          PARAMETERS=$(aws cloudformation validate-template \
+            --template-body file://cloudformation/data-stack.yaml \
+            --region "$AWS_REGION" \
+            --query 'Parameters[].ParameterKey' \
+            --output text)
+
+          echo "Parameters detected in data-stack.yaml:"
+          printf '%s\n' "$PARAMETERS"
+
+          for PARAM in Environment VpcId PrivateDatabaseSubnetIds ApplicationSecurityGroupId; do
+            if ! printf '%s\n' "$PARAMETERS" | tr '\t' '\n' | grep -Fxq "$PARAM"; then
+              echo "ERROR: $PARAM is missing from cloudformation/data-stack.yaml"
+              exit 1
+            fi
+          done
+
+          echo "All required Data Stack parameters are present."
+
+      - name: Deploy Data Stack
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -n "$VPC_ID"
+          test -n "$PRIVATE_SUBNET_A_ID"
+          test -n "$PRIVATE_SUBNET_B_ID"
+          test -n "$LAMBDA_SECURITY_GROUP_ID"
+
           aws cloudformation deploy \
             --template-file cloudformation/data-stack.yaml \
             --stack-name "$DATA_STACK_NAME" \
@@ -106,14 +135,12 @@ jobs:
               ApplicationSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
             --no-fail-on-empty-changeset
 
-      # 8. Validate IAM Stack
       - name: Validate IAM Stack
         run: |
           aws cloudformation validate-template \
             --template-body file://cloudformation/iam-stack.yaml \
             --region "$AWS_REGION"
 
-      # 9. Deploy IAM Stack
       - name: Deploy IAM Stack
         run: |
           aws cloudformation deploy \
@@ -124,16 +151,28 @@ jobs:
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
-      # 10. Validate Application Stack
       - name: Validate Application Stack
         run: |
           aws cloudformation validate-template \
             --template-body file://cloudformation/application-stack.yaml \
             --region "$AWS_REGION"
 
-      # 11. Deploy Application Stack
       - name: Deploy Application Stack
+        shell: bash
         run: |
+          set -euo pipefail
+
+          : "${{ vars.LAMBDA_CODE_BUCKET }}"
+          : "${{ vars.LAMBDA_CODE_KEY }}"
+          : "${{ vars.AUTH_LAMBDA_ROLE_ARN }}"
+          : "${{ vars.AUTHORIZER_LAMBDA_ROLE_ARN }}"
+          : "${{ vars.DOCTOR_LAMBDA_ROLE_ARN }}"
+          : "${{ vars.PATIENT_LAMBDA_ROLE_ARN }}"
+          : "${{ vars.DATABASE_SECRET_ARN }}"
+          : "${{ vars.DATABASE_HOST }}"
+          : "${{ vars.AUTH_TOKENS_TABLE_NAME }}"
+          : "${{ vars.JWT_SECRET_PARAMETER }}"
+
           aws cloudformation deploy \
             --template-file cloudformation/application-stack.yaml \
             --stack-name "$APPLICATION_STACK_NAME" \
@@ -154,9 +193,9 @@ jobs:
               DatabaseName=medislot \
               AuthTokensTableName="${{ vars.AUTH_TOKENS_TABLE_NAME }}" \
               JwtSecretParameter="${{ vars.JWT_SECRET_PARAMETER }}" \
+            --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
-      # 12. Display Deployment Status
       - name: Display Deployment Status
         if: always()
         shell: bash
@@ -169,7 +208,6 @@ jobs:
           do
             echo "======================================"
             echo "Stack: $STACK"
-
             aws cloudformation describe-stacks \
               --stack-name "$STACK" \
               --region "$AWS_REGION" \

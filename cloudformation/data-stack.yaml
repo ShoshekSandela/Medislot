@@ -1,3 +1,6 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: MediSlot Data Stack - RDS MySQL, DynamoDB and private S3 bucket
+
 Parameters:
   Environment:
     Type: String
@@ -6,27 +9,28 @@ Parameters:
       - dev
       - test
       - prod
+    Description: Deployment environment
 
   VpcId:
-    Type: AWS::EC2::VPC::Id
+    Type: String
     Description: VPC ID created by the Network Stack
 
   PrivateDatabaseSubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
-    Description: Private database subnet IDs
+    Type: CommaDelimitedList
+    Description: Two private database subnet IDs created by the Network Stack
 
   ApplicationSecurityGroupId:
-    Type: AWS::EC2::SecurityGroup::Id
-    Description: Application security group ID
+    Type: String
+    Description: Application security group ID created by the Network Stack
+
+Conditions:
+  IsProduction: !Equals [!Ref Environment, prod]
 
 Resources:
-
-  # RDS Security Group
   DatabaseSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow MySQL access from MediSlot application
-      GroupName: !Sub medislot-${Environment}-database-sg
+      GroupDescription: Allow MySQL access from MediSlot application security group
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -39,7 +43,6 @@ Resources:
         - Key: Project
           Value: MediSlot
 
-  # RDS Subnet Group
   DatabaseSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
@@ -51,7 +54,6 @@ Resources:
         - Key: Project
           Value: MediSlot
 
-  # RDS MySQL Database
   MySQLDatabase:
     Type: AWS::RDS::DBInstance
     Properties:
@@ -71,6 +73,7 @@ Resources:
       PubliclyAccessible: false
       BackupRetentionPeriod: 1
       AutoMinorVersionUpgrade: true
+      DeletionProtection: !If [IsProduction, true, false]
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-mysql
@@ -79,7 +82,6 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # DynamoDB Slots Table
   SlotsTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -110,7 +112,6 @@ Resources:
         - Key: Project
           Value: MediSlot
 
-  # DynamoDB Idempotency Table
   IdempotencyTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -131,7 +132,6 @@ Resources:
         - Key: Project
           Value: MediSlot
 
-  # DynamoDB Waitlist Table
   WaitlistTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -153,7 +153,6 @@ Resources:
         - Key: Project
           Value: MediSlot
 
-  # DynamoDB Hold Offers Table
   HoldOffersTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -187,7 +186,6 @@ Resources:
         - Key: Project
           Value: MediSlot
 
-  # DynamoDB Authentication Tokens Table
   AuthTokensTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -208,7 +206,6 @@ Resources:
         - Key: Project
           Value: MediSlot
 
-  # DynamoDB Dispatch Log Table
   DispatchLogTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -229,7 +226,6 @@ Resources:
         - Key: Project
           Value: MediSlot
 
-  # Private S3 Bucket
   ApplicationFilesBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -249,6 +245,9 @@ Resources:
           Value: MediSlot
 
 Outputs:
+  VpcId:
+    Description: VPC ID used by the data stack
+    Value: !Ref VpcId
 
   DatabaseEndpoint:
     Description: RDS MySQL endpoint address
@@ -271,22 +270,29 @@ Outputs:
     Value: !GetAtt DatabaseSecurityGroup.GroupId
 
   SlotsTableName:
+    Description: DynamoDB slots table name
     Value: !Ref SlotsTable
 
   IdempotencyTableName:
+    Description: DynamoDB idempotency table name
     Value: !Ref IdempotencyTable
 
   WaitlistTableName:
+    Description: DynamoDB waitlist table name
     Value: !Ref WaitlistTable
 
   HoldOffersTableName:
+    Description: DynamoDB hold offers table name
     Value: !Ref HoldOffersTable
 
   AuthTokensTableName:
+    Description: DynamoDB authentication tokens table name
     Value: !Ref AuthTokensTable
 
   DispatchLogTableName:
+    Description: DynamoDB dispatch log table name
     Value: !Ref DispatchLogTable
 
   ApplicationFilesBucketName:
+    Description: Private S3 application files bucket name
     Value: !Ref ApplicationFilesBucket
