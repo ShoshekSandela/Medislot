@@ -39,13 +39,14 @@ jobs:
       - name: Check AWS Connection
         run: aws sts get-caller-identity
 
-      # Deploy the Network Stack first.
+      # 1. Validate Network Stack
       - name: Validate Network Stack
         run: |
           aws cloudformation validate-template \
             --template-body file://cloudformation/network-stack.yaml \
             --region "$AWS_REGION"
 
+      # 2. Deploy Network Stack
       - name: Deploy Network Stack
         run: |
           aws cloudformation deploy \
@@ -55,7 +56,7 @@ jobs:
             --parameter-overrides Environment=dev \
             --no-fail-on-empty-changeset
 
-      # Read the outputs from the Network Stack for the Data Stack.
+      # 3. Get Network Outputs
       - name: Get Network Resource IDs
         shell: bash
         run: |
@@ -66,8 +67,6 @@ jobs:
             --region "$AWS_REGION" \
             --query "Stacks[0].Outputs" \
             --output json)
-
-          echo "$OUTPUTS"
 
           get_output() {
             echo "$OUTPUTS" | jq -er --arg key "$1" \
@@ -86,13 +85,14 @@ jobs:
             echo "LAMBDA_SECURITY_GROUP_ID=$LAMBDA_SECURITY_GROUP_ID"
           } >> "$GITHUB_ENV"
 
-      # Deploy the Data Stack only after the Network Stack succeeds.
+      # 4. Validate Data Stack
       - name: Validate Data Stack
         run: |
           aws cloudformation validate-template \
             --template-body file://cloudformation/data-stack.yaml \
             --region "$AWS_REGION"
 
+      # 5. Deploy Data Stack
       - name: Deploy Data Stack
         run: |
           aws cloudformation deploy \
@@ -106,13 +106,14 @@ jobs:
               ApplicationSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
             --no-fail-on-empty-changeset
 
-      # Deploy IAM roles after the infrastructure resources.
+      # 6. Validate IAM Stack
       - name: Validate IAM Stack
         run: |
           aws cloudformation validate-template \
             --template-body file://cloudformation/iam-stack.yaml \
             --region "$AWS_REGION"
 
+      # 7. Deploy IAM Stack
       - name: Deploy IAM Stack
         run: |
           aws cloudformation deploy \
@@ -123,6 +124,7 @@ jobs:
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
+      # 8. Display Deployment Status
       - name: Display Stack Status
         if: always()
         run: |

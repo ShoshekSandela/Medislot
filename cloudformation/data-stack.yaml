@@ -66,7 +66,6 @@ Resources:
       AllocatedStorage: 20
       StorageType: gp3
       StorageEncrypted: true
-      KmsKeyId: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/rds
       DBName: medislot
       MasterUsername: medislotadmin
       ManageMasterUserPassword: true
