@@ -6,6 +6,7 @@ import uuid
 import hashlib
 import secrets
 import logging
+import hmac
 from datetime import datetime, timedelta, timezone
 
 import boto3
@@ -27,6 +28,9 @@ JWT_SECRET_PARAMETER = os.environ.get(
 AUTH_TOKENS_TABLE = os.environ.get(
     "AUTH_TOKENS_TABLE", "medislot-dev-auth-tokens"
 )
+# Set this environment variable only while initializing the database.
+DB_INIT_TOKEN = os.environ.get("DB_INIT_TOKEN", "")
+SCHEMA_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "database", "schema.sql"))
 ACCESS_TOKEN_MINUTES = int(os.environ.get("ACCESS_TOKEN_MINUTES", "15"))
 REFRESH_TOKEN_DAYS = int(os.environ.get("REFRESH_TOKEN_DAYS", "7"))
 
@@ -67,6 +71,70 @@ def connect_db():
         write_timeout=10,
         autocommit=False,
     )
+
+
+def initialize_database(event):
+    """Run the bundled schema once, protected by a temporary secret token."""
+    if not DB_INIT_TOKEN:
+        return response(404, {"message": "Route not available"})
+
+    headers = event.get("headers") or {}
+    supplied_token = headers.get("x-db-init-token") or headers.get("X-DB-Init-Token") or ""
+    if not hmac.compare_digest(str(supplied_token), DB_INIT_TOKEN):
+        return response(403, {"message": "Forbidden"})
+
+    if not os.path.isfile(SCHEMA_FILE):
+        logger.error("Database schema file was not found at %s", SCHEMA_FILE)
+        return response(500, {"message": "Schema file is missing from the Lambda package"})
+
+    connection = None
+    try:
+        with open(SCHEMA_FILE, "r", encoding="utf-8") as schema_file:
+            schema_sql = schema_file.read()
+
+        # Connect without selecting a database so CREATE DATABASE can run
+        # even when the medislot database has not been created yet.
+        connection = pymysql.connect(
+            host=DB_HOST,
+            user=DB_SECRET.get("username") or DB_SECRET.get("user"),
+            password=DB_SECRET["password"],
+            port=int(os.environ.get("DB_PORT", "3306")),
+            connect_timeout=5,
+            read_timeout=30,
+            write_timeout=30,
+            autocommit=True,
+        )
+
+        statements = [part.strip() for part in schema_sql.split(";") if part.strip()]
+        with connection.cursor() as cursor:
+            for statement in statements:
+                cursor.execute(statement)
+
+        # Confirm the expected tables exist in the configured database.
+        with connection.cursor() as cursor:
+            cursor.execute(f"USE `{DB_NAME}`")
+            cursor.execute("SHOW TABLES")
+            existing = {row[0] if not isinstance(row, dict) else next(iter(row.values()))
+                        for row in cursor.fetchall()}
+
+        expected = {
+            "users", "hospitals", "doctors", "patients",
+            "specialisations", "doctor_specialisations",
+            "consultation_types", "appointments"
+        }
+        missing = sorted(expected - existing)
+        if missing:
+            logger.error("Schema initialization missing tables: %s", missing)
+            return response(500, {"message": "Schema executed but some tables are missing", "missingTables": missing})
+
+        logger.info("MediSlot schema initialization completed successfully")
+        return response(200, {"message": "Database schema initialized successfully", "tables": sorted(existing)})
+    except Exception:
+        logger.exception("Database schema initialization failed")
+        return response(500, {"message": "Database schema initialization failed; check CloudWatch logs"})
+    finally:
+        if connection:
+            connection.close()
 
 
 def parse_body(event):
@@ -383,6 +451,7 @@ def lambda_handler(event, context):
     # Support the current Postman paths and the earlier route names.
     # API Gateway REST API Lambda proxy events include the full path, without the stage.
     routes = {
+        ("/auth/initialize-database", "POST"): lambda: initialize_database(event),
         ("/auth/patients/register", "POST"): lambda: register(event, "patient"),
         ("/auth/doctors/register", "POST"): lambda: register(event, "doctor"),
         ("/auth/register/patient", "POST"): lambda: register(event, "patient"),
