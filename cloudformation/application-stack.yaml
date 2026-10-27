@@ -238,6 +238,28 @@ Resources:
           - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
           - FunctionArn: !GetAtt AuthenticationLambda.Arn
 
+  # /auth/{proxy+} - forwards nested authentication paths to AuthenticationLambda
+  AuthProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ParentId: !Ref AuthResource
+      PathPart: '{proxy+}'
+
+  AuthProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref AuthProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt AuthenticationLambda.Arn
+
   # /doctors
   DoctorsResource:
     Type: AWS::ApiGateway::Resource
@@ -291,7 +313,7 @@ Resources:
       Action: lambda:InvokeFunction
       FunctionName: !Ref AuthenticationLambda
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/*/auth
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/*/auth*
 
   # Allow API Gateway to invoke Doctor Lambda
   DoctorApiPermission:
@@ -325,11 +347,13 @@ Resources:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - AuthMethod
+      - AuthProxyMethod
       - DoctorsMethod
       - PatientsMethod
     Properties:
       RestApiId: !Ref MediSlotApi
       StageName: !Ref Environment
+      Description: !Sub MediSlot ${Environment} API deployment with authentication proxy routes
 
 Outputs:
   ApiId:

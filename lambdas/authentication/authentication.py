@@ -380,7 +380,11 @@ def lambda_handler(event, context):
     path = (event.get("path") or event.get("rawPath") or "").rstrip("/")
     method = event.get("httpMethod") or event.get("requestContext", {}).get("http", {}).get("method", "")
     method = method.upper()
+    # Support the current Postman paths and the earlier route names.
+    # API Gateway REST API Lambda proxy events include the full path, without the stage.
     routes = {
+        ("/auth/patients/register", "POST"): lambda: register(event, "patient"),
+        ("/auth/doctors/register", "POST"): lambda: register(event, "doctor"),
         ("/auth/register/patient", "POST"): lambda: register(event, "patient"),
         ("/auth/register/doctor", "POST"): lambda: register(event, "doctor"),
         ("/auth/login", "POST"): lambda: login(event),
