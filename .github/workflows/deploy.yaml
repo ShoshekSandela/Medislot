@@ -215,6 +215,24 @@ jobs:
           # Copy all Lambda source code.
           cp -r lambdas "$PACKAGE_DIR/"
 
+          # Include schema.sql at the package root so the authentication
+          # Lambda can find it at /var/task/database/schema.sql.
+          if [ ! -f "database/schema.sql" ]; then
+            echo "ERROR: database/schema.sql was not found in the repository."
+            exit 1
+          fi
+
+          mkdir -p "$PACKAGE_DIR/database"
+          cp database/schema.sql "$PACKAGE_DIR/database/schema.sql"
+
+          # Verify that the schema is included in the package.
+          if [ ! -f "$PACKAGE_DIR/database/schema.sql" ]; then
+            echo "ERROR: database/schema.sql was not copied into the Lambda package."
+            exit 1
+          fi
+
+          echo "Database schema verified in Lambda package."
+
           # Install dependencies at the ZIP root.
           python -m pip install --upgrade pip
           python -m pip install \
