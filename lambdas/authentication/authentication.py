@@ -33,6 +33,11 @@ DB_INIT_TOKEN = os.environ.get("DB_INIT_TOKEN", "")
 SCHEMA_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "database", "schema.sql"))
 ACCESS_TOKEN_MINUTES = int(os.environ.get("ACCESS_TOKEN_MINUTES", "15"))
 REFRESH_TOKEN_DAYS = int(os.environ.get("REFRESH_TOKEN_DAYS", "7"))
+# Doctors register as 'pending'. There is no admin-approval endpoint yet, so set
+# DOCTOR_AUTO_ACTIVATE=true (Lambda env var) to let new doctors log in immediately.
+DOCTOR_AUTO_ACTIVATE = os.environ.get("DOCTOR_AUTO_ACTIVATE", "false").lower() == "true"
+# Seeded by /auth/initialize-database when the hospitals table is empty.
+DEFAULT_HOSPITAL_ID = "00000000-0000-4000-8000-000000000001"
 
 ssm = boto3.client("ssm", region_name=REGION)
 secrets_manager = boto3.client("secretsmanager", region_name=REGION)
@@ -127,8 +132,26 @@ def initialize_database(event):
             logger.error("Schema initialization missing tables: %s", missing)
             return response(500, {"message": "Schema executed but some tables are missing", "missingTables": missing})
 
+        # Doctors need a valid hospital (foreign key). Seed one if none exist.
+        with connection.cursor() as cursor:
+            cursor.execute(f"USE `{DB_NAME}`")
+            cursor.execute("SELECT COUNT(*) FROM hospitals")
+            count = cursor.fetchone()[0]
+            if count == 0:
+                cursor.execute(
+                    "INSERT INTO hospitals (hospital_id, hospital_name, city, state, status) "
+                    "VALUES (%s, %s, %s, %s, 'active')",
+                    (DEFAULT_HOSPITAL_ID, "MediSlot General Hospital", "Hyderabad", "Telangana"),
+                )
+            cursor.execute("SELECT hospital_id, hospital_name FROM hospitals WHERE status = 'active'")
+            hospitals = [{"hospital_id": r[0], "hospital_name": r[1]} for r in cursor.fetchall()]
+
         logger.info("MediSlot schema initialization completed successfully")
-        return response(200, {"message": "Database schema initialized successfully", "tables": sorted(existing)})
+        return response(200, {
+            "message": "Database schema initialized successfully",
+            "tables": sorted(existing),
+            "hospitals": hospitals,
+        })
     except Exception:
         logger.exception("Database schema initialization failed")
         return response(500, {"message": "Database schema initialization failed; check CloudWatch logs"})
@@ -264,6 +287,9 @@ def register(event, role):
     try:
         with connect_db() as conn:
             with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM users WHERE email = %s", (email,))
+                if cur.fetchone():
+                    return response(409, {"message": "Email already registered"})
                 cur.execute(
                     "INSERT INTO users (user_id, email, password_hash, role, status) "
                     "VALUES (%s, %s, %s, %s, 'active')",
@@ -288,32 +314,72 @@ def register(event, role):
                     # Doctor registration is pending until the profile is reviewed.
                     hospital_id = data.get("hospital_id")
                     registration_number = data.get("registration_number")
-                    if not isinstance(hospital_id, str) or not hospital_id:
+                    if not isinstance(hospital_id, str) or not hospital_id.strip():
                         conn.rollback()
                         return response(400, {"message": "hospital_id is required"})
+                    hospital_id = hospital_id.strip()
                     if not isinstance(registration_number, str) or not registration_number.strip():
                         conn.rollback()
                         return response(400, {"message": "registration_number is required"})
+                    registration_number = registration_number.strip()
+                    try:
+                        experience_years = int(data.get("experience_years") or 0)
+                        consultation_fee = float(data.get("consultation_fee") or 0)
+                    except (TypeError, ValueError):
+                        conn.rollback()
+                        return response(400, {"message": "experience_years and consultation_fee must be numbers"})
+                    if experience_years < 0 or consultation_fee < 0:
+                        conn.rollback()
+                        return response(400, {"message": "experience_years and consultation_fee cannot be negative"})
+
+                    # hospital_id is a foreign key: check it first so the caller gets a
+                    # clear error instead of a generic 409 conflict.
+                    cur.execute(
+                        "SELECT hospital_id FROM hospitals WHERE hospital_id = %s AND status = 'active'",
+                        (hospital_id,),
+                    )
+                    if not cur.fetchone():
+                        conn.rollback()
+                        return response(400, {"message": "hospital_id does not match any active hospital"})
+
+                    cur.execute(
+                        "SELECT 1 FROM doctors WHERE registration_number = %s",
+                        (registration_number,),
+                    )
+                    if cur.fetchone():
+                        conn.rollback()
+                        return response(409, {"message": "registration_number already exists"})
+
+                    profile_status = "active" if DOCTOR_AUTO_ACTIVATE else "pending"
                     cur.execute(
                         "INSERT INTO doctors "
                         "(doctor_id, user_id, hospital_id, registration_number, first_name, "
                         "last_name, qualification, experience_years, consultation_fee, profile_status) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')",
-                        (profile_id, user_id, hospital_id, registration_number.strip(),
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (profile_id, user_id, hospital_id, registration_number,
                          first_name.strip(), last_name.strip() or "", data.get("qualification"),
-                         int(data.get("experience_years") or 0),
-                         data.get("consultation_fee") or 0),
+                         experience_years, consultation_fee, profile_status),
                     )
             conn.commit()
         return response(201, {
             "message": f"{role.capitalize()} registration successful",
             "userId": user_id,
             "profileId": profile_id,
-            "status": "pending" if role == "doctor" else "active",
+            "status": ("active" if DOCTOR_AUTO_ACTIVATE else "pending") if role == "doctor" else "active",
         })
     except pymysql.err.IntegrityError as exc:
-        logger.info("Registration conflict: %s", exc.args[0] if exc.args else "integrity")
-        return response(409, {"message": "Email, registration number, or related record already exists"})
+        code = exc.args[0] if exc.args else 0
+        detail = str(exc.args[1]) if len(exc.args) > 1 else ""
+        logger.warning("Registration integrity error: %s %s", code, detail)
+        if code == 1062:  # duplicate key (race with the pre-checks above)
+            if "email" in detail:
+                return response(409, {"message": "Email already registered"})
+            if "registration_number" in detail:
+                return response(409, {"message": "registration_number already exists"})
+            return response(409, {"message": "Record already exists"})
+        if code == 1452:  # foreign key failure
+            return response(400, {"message": "hospital_id does not match any hospital"})
+        return response(400, {"message": "Registration data violates a database constraint"})
     except Exception:
         logger.exception("Registration failed")
         return response(500, {"message": "Internal server error"})
@@ -481,3 +547,4 @@ def lambda_handler(event, context):
     if not handler:
         return response(404, {"message": "Route not found"})
     return handler()
+ 
