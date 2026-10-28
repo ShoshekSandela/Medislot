@@ -229,7 +229,7 @@ Resources:
     Properties:
       RestApiId: !Ref MediSlotApi
       ResourceId: !Ref AuthResource
-      HttpMethod: ANY
+      HttpMethod: POST
       AuthorizationType: NONE
       Integration:
         Type: AWS_PROXY
@@ -251,7 +251,7 @@ Resources:
     Properties:
       RestApiId: !Ref MediSlotApi
       ResourceId: !Ref AuthProxyResource
-      HttpMethod: ANY
+      HttpMethod: POST
       AuthorizationType: NONE
       Integration:
         Type: AWS_PROXY
@@ -273,7 +273,7 @@ Resources:
     Properties:
       RestApiId: !Ref MediSlotApi
       ResourceId: !Ref DoctorsResource
-      HttpMethod: ANY
+      HttpMethod: POST
       AuthorizationType: CUSTOM
       AuthorizerId: !Ref MediSlotApiAuthorizer
       Integration:
@@ -296,7 +296,7 @@ Resources:
     Properties:
       RestApiId: !Ref MediSlotApi
       ResourceId: !Ref PatientsResource
-      HttpMethod: ANY
+      HttpMethod: POST
       AuthorizationType: CUSTOM
       AuthorizerId: !Ref MediSlotApiAuthorizer
       Integration:
