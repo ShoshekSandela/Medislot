@@ -48,7 +48,7 @@ Parameters:
 
   DatabaseSecretArn:
     Type: String
-    Description: ARN of the RDS-managed database credentials secret
+    Description: ARN of the RDS database credentials secret
 
   DatabaseHost:
     Type: String
@@ -74,7 +74,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub medislot-${Environment}-authentication
-      Description: Handles MediSlot registration, login, refresh and logout
+      Description: Handles registration, login, refresh and logout
       Runtime: python3.12
       Handler: lambdas.authentication.authentication.lambda_handler
       Role: !Ref AuthLambdaRoleArn
@@ -101,7 +101,7 @@ Resources:
         - Key: Project
           Value: MediSlot
 
-  # JWT Authorizer Lambda
+  # Authorizer Lambda
   AuthorizerLambda:
     Type: AWS::Lambda::Function
     Properties:
@@ -135,7 +135,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub medislot-${Environment}-doctor
-      Description: Handles MediSlot doctor profile operations
+      Description: Handles doctor profile operations
       Runtime: python3.12
       Handler: lambdas.doctor.doctor.lambda_handler
       Role: !Ref DoctorLambdaRoleArn
@@ -165,7 +165,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub medislot-${Environment}-patient
-      Description: Handles MediSlot patient profile operations
+      Description: Handles patient profile operations
       Runtime: python3.12
       Handler: lambdas.patient.patient.lambda_handler
       Role: !Ref PatientLambdaRoleArn
@@ -190,7 +190,7 @@ Resources:
         - Key: Project
           Value: MediSlot
 
-  # API Gateway REST API
+  # API Gateway
   MediSlotApi:
     Type: AWS::ApiGateway::RestApi
     Properties:
@@ -216,7 +216,10 @@ Resources:
         - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
         - FunctionArn: !GetAtt AuthorizerLambda.Arn
 
-  # /auth
+  # =========================================================
+  # AUTH ROUTES
+  # =========================================================
+
   AuthResource:
     Type: AWS::ApiGateway::Resource
     Properties:
@@ -224,6 +227,7 @@ Resources:
       ParentId: !GetAtt MediSlotApi.RootResourceId
       PathPart: auth
 
+  # POST /auth
   AuthMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -238,7 +242,6 @@ Resources:
           - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
           - FunctionArn: !GetAtt AuthenticationLambda.Arn
 
-  # /auth/{proxy+} - forwards nested authentication paths to AuthenticationLambda
   AuthProxyResource:
     Type: AWS::ApiGateway::Resource
     Properties:
@@ -246,6 +249,7 @@ Resources:
       ParentId: !Ref AuthResource
       PathPart: '{proxy+}'
 
+  # POST /auth/{proxy+}
   AuthProxyMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -260,7 +264,10 @@ Resources:
           - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
           - FunctionArn: !GetAtt AuthenticationLambda.Arn
 
-  # /doctors
+  # =========================================================
+  # DOCTOR ROUTES
+  # =========================================================
+
   DoctorsResource:
     Type: AWS::ApiGateway::Resource
     Properties:
@@ -268,12 +275,13 @@ Resources:
       ParentId: !GetAtt MediSlotApi.RootResourceId
       PathPart: doctors
 
-  DoctorsMethod:
+  # GET /doctors
+  DoctorsGetMethod:
     Type: AWS::ApiGateway::Method
     Properties:
       RestApiId: !Ref MediSlotApi
       ResourceId: !Ref DoctorsResource
-      HttpMethod: POST
+      HttpMethod: GET
       AuthorizationType: CUSTOM
       AuthorizerId: !Ref MediSlotApiAuthorizer
       Integration:
@@ -283,7 +291,65 @@ Resources:
           - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
           - FunctionArn: !GetAtt DoctorLambda.Arn
 
-  # /patients
+  # PUT /doctors
+  DoctorsPutMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref DoctorsResource
+      HttpMethod: PUT
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref MediSlotApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt DoctorLambda.Arn
+
+  DoctorsProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ParentId: !Ref DoctorsResource
+      PathPart: '{proxy+}'
+
+  # GET /doctors/{proxy+}
+  DoctorsProxyGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref DoctorsProxyResource
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref MediSlotApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt DoctorLambda.Arn
+
+  # PUT /doctors/{proxy+}
+  DoctorsProxyPutMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref DoctorsProxyResource
+      HttpMethod: PUT
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref MediSlotApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt DoctorLambda.Arn
+
+  # =========================================================
+  # PATIENT ROUTES
+  # =========================================================
+
   PatientsResource:
     Type: AWS::ApiGateway::Resource
     Properties:
@@ -291,12 +357,13 @@ Resources:
       ParentId: !GetAtt MediSlotApi.RootResourceId
       PathPart: patients
 
-  PatientsMethod:
+  # GET /patients
+  PatientsGetMethod:
     Type: AWS::ApiGateway::Method
     Properties:
       RestApiId: !Ref MediSlotApi
       ResourceId: !Ref PatientsResource
-      HttpMethod: POST
+      HttpMethod: GET
       AuthorizationType: CUSTOM
       AuthorizerId: !Ref MediSlotApiAuthorizer
       Integration:
@@ -306,34 +373,121 @@ Resources:
           - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
           - FunctionArn: !GetAtt PatientLambda.Arn
 
-  # Allow API Gateway to invoke Authentication Lambda
+  # PUT /patients
+  PatientsPutMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref PatientsResource
+      HttpMethod: PUT
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref MediSlotApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt PatientLambda.Arn
+
+  # DELETE /patients
+  PatientsDeleteMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref PatientsResource
+      HttpMethod: DELETE
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref MediSlotApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt PatientLambda.Arn
+
+  PatientsProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ParentId: !Ref PatientsResource
+      PathPart: '{proxy+}'
+
+  # GET /patients/{proxy+}
+  PatientsProxyGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref PatientsProxyResource
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref MediSlotApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt PatientLambda.Arn
+
+  # PUT /patients/{proxy+}
+  PatientsProxyPutMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref PatientsProxyResource
+      HttpMethod: PUT
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref MediSlotApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt PatientLambda.Arn
+
+  # DELETE /patients/{proxy+}
+  PatientsProxyDeleteMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref PatientsProxyResource
+      HttpMethod: DELETE
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref MediSlotApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt PatientLambda.Arn
+
+  # =========================================================
+  # LAMBDA PERMISSIONS
+  # =========================================================
+
   AuthenticationApiPermission:
     Type: AWS::Lambda::Permission
     Properties:
       Action: lambda:InvokeFunction
       FunctionName: !Ref AuthenticationLambda
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/*/auth*
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/POST/auth*
 
-  # Allow API Gateway to invoke Doctor Lambda
   DoctorApiPermission:
     Type: AWS::Lambda::Permission
     Properties:
       Action: lambda:InvokeFunction
       FunctionName: !Ref DoctorLambda
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/*/doctors
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/*/doctors*
 
-  # Allow API Gateway to invoke Patient Lambda
   PatientApiPermission:
     Type: AWS::Lambda::Permission
     Properties:
       Action: lambda:InvokeFunction
       FunctionName: !Ref PatientLambda
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/*/patients
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/*/patients*
 
-  # Allow API Gateway to invoke the Authorizer Lambda
   AuthorizerApiPermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -342,18 +496,29 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/authorizers/*
 
-  # Deploy API Gateway
+  # =========================================================
+  # API DEPLOYMENT
+  # =========================================================
+
   MediSlotApiDeploymentV2:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - AuthMethod
       - AuthProxyMethod
-      - DoctorsMethod
-      - PatientsMethod
+      - DoctorsGetMethod
+      - DoctorsPutMethod
+      - DoctorsProxyGetMethod
+      - DoctorsProxyPutMethod
+      - PatientsGetMethod
+      - PatientsPutMethod
+      - PatientsDeleteMethod
+      - PatientsProxyGetMethod
+      - PatientsProxyPutMethod
+      - PatientsProxyDeleteMethod
     Properties:
       RestApiId: !Ref MediSlotApi
       StageName: !Ref Environment
-      Description: !Sub MediSlot ${Environment} API deployment with authentication proxy routes
+      Description: !Sub MediSlot ${Environment} API deployment
 
 Outputs:
   ApiId:

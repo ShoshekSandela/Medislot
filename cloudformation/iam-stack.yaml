@@ -100,7 +100,7 @@ Resources:
                 Action:
                   - secretsmanager:GetSecretValue
                 Resource:
-                  - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:rds!db-2c4bef40-f0a0-404e-8f88-6f4b93b4877a-*'
+                  - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:rds!*'
 
   # 3. Doctor Lambda execution role
   DoctorLambdaRole:
@@ -128,7 +128,7 @@ Resources:
                 Action:
                   - secretsmanager:GetSecretValue
                 Resource:
-                  - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:rds!db-2c4bef40-f0a0-404e-8f88-6f4b93b4877a-*'
+                  - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:rds!*'
 
   # 4. Patient Lambda execution role
   PatientLambdaRole:
@@ -156,7 +156,7 @@ Resources:
                 Action:
                   - secretsmanager:GetSecretValue
                 Resource:
-                  - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:rds!db-2c4bef40-f0a0-404e-8f88-6f4b93b4877a-*'
+                  - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:rds!*'
 
   # 5. Availability Lambda execution role
   AvailabilityLambdaRole:
