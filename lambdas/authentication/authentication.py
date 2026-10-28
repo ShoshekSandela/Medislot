@@ -364,37 +364,54 @@ def login(event):
 
 
 def refresh(event):
+    """
+    Validate the existing refresh token and issue a new access token.
+
+    Refresh tokens are stable for their original 7-day lifetime:
+    - Do not revoke or rotate the refresh token during refresh.
+    - Do not update expiresAt during refresh.
+    - Return the exact same refresh token supplied by the client.
+    """
     data = parse_body(event)
     raw = data.get("refreshToken")
     if not isinstance(raw, str) or not raw:
         return response(400, {"message": "refreshToken is required"})
-    old_id = "REFRESH#" + sha256_hex(raw)
+
+    token_id = "REFRESH#" + sha256_hex(raw)
     now = int(time.time())
+
     try:
-        result = token_table.get_item(Key={"tokenId": old_id}, ConsistentRead=True)
+        result = token_table.get_item(
+            Key={"tokenId": token_id},
+            ConsistentRead=True,
+        )
         record = result.get("Item")
-        if not record or record.get("revoked") or int(record.get("expiresAt", 0)) <= now:
+
+        if (
+            not record
+            or record.get("tokenType") != "REFRESH"
+            or record.get("revoked") is True
+            or int(record.get("expiresAt", 0)) <= now
+        ):
             return response(401, {"message": "Invalid or expired refresh token"})
 
-        # Rotate safely: only one request can revoke this token.
-        token_table.update_item(
-            Key={"tokenId": old_id},
-            UpdateExpression="SET revoked = :true, revokedAt = :now",
-            ConditionExpression="revoked = :false AND expiresAt > :now",
-            ExpressionAttributeValues={":true": True, ":false": False, ":now": now},
+        # Issue a fresh short-lived access token, while keeping the original
+        # refresh token and its original expiresAt unchanged.
+        access, jti, access_exp = new_access_token(
+            str(record["userId"]),
+            str(record["role"]),
         )
-        access, jti, access_exp = new_access_token(record["userId"], record["role"])
-        new_refresh = create_refresh_token(record["userId"], record["role"])
+
         return response(200, {
             "accessToken": access,
             "tokenType": "Bearer",
             "expiresIn": ACCESS_TOKEN_MINUTES * 60,
-            "refreshToken": new_refresh,
+            "refreshToken": raw,
+            "refreshTokenExpiresAt": int(record["expiresAt"]),
         })
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return response(401, {"message": "Refresh token has already been used"})
-        logger.exception("Refresh token operation failed")
+
+    except ClientError:
+        logger.exception("Refresh token lookup failed")
         return response(500, {"message": "Internal server error"})
     except Exception:
         logger.exception("Refresh failed")
