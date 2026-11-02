@@ -308,13 +308,13 @@ def register(event, role=None):
                          phone, dob or None, gender or None),
                     )
                 else:
-                    # Doctor registration is pending until the profile is reviewed.
+                    # Doctor registration is active after successful validation.
                     # hospital_id is no longer collected at registration.
                     cur.execute(
                         "INSERT INTO doctors "
                         "(doctor_id, user_id, registration_number, first_name, "
                         "last_name, qualification, experience_years, consultation_fee, profile_status) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending')",
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'active')",
                         (profile_id, user_id, registration_number,
                          first_name.strip(), last_name.strip() or "", data.get("qualification"),
                          experience_years, consultation_fee),
@@ -324,7 +324,7 @@ def register(event, role=None):
             "message": f"{role.capitalize()} registration successful",
             "userId": user_id,
             "profileId": profile_id,
-            "status": "pending" if role == "doctor" else "active",
+            "status": "active",
         })
     except pymysql.err.IntegrityError as exc:
         code = exc.args[0] if exc.args else None
