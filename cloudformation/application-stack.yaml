@@ -39,6 +39,12 @@ Parameters:
   PatientLambdaRoleArn:
     Type: String
 
+  SlotMaterializerLambdaRoleArn:
+    Type: String
+
+  SlotsTableName:
+    Type: String
+
   DatabaseSecretArn:
     Type: String
 
@@ -187,6 +193,56 @@ Resources:
         - Key: Project
           Value: MediSlot
 
+
+  # =========================================================
+  # SLOT MATERIALIZER LAMBDA
+  # =========================================================
+
+  SlotMaterializerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-slot-materializer
+      Runtime: python3.12
+      Handler: lambdas.slot_materializer.slot_materializer.lambda_handler
+      Role: !Ref SlotMaterializerLambdaRoleArn
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      MemorySize: 512
+      Timeout: 60
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnetAId
+          - !Ref PrivateSubnetBId
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_SECRET_ARN: !Ref DatabaseSecretArn
+          DB_HOST: !Ref DatabaseHost
+          DB_NAME: !Ref DatabaseName
+          SLOTS_TABLE_NAME: !Ref SlotsTableName
+          SLOT_WINDOW_DAYS: '30'
+
+  SlotMaterializerSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub medislot-${Environment}-slot-materializer-daily
+      ScheduleExpression: rate(1 day)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt SlotMaterializerLambda.Arn
+          Id: SlotMaterializerTarget
+
+  AllowEventBridgeInvokeSlotMaterializer:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SlotMaterializerLambda
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SlotMaterializerSchedule.Arn
+
   # =========================================================
   # API GATEWAY REST API
   # =========================================================
@@ -315,6 +371,33 @@ Resources:
           - FunctionArn: !GetAtt DoctorLambda.Arn
 
   # =========================================================
+  # DOCTOR DOMAIN PROXY ROUTES
+  # /doctors/{proxy+} for consultation-types, availability, blackouts
+  # =========================================================
+
+  DoctorsProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ParentId: !Ref DoctorsResource
+      PathPart: '{proxy+}'
+
+  DoctorsProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref DoctorsProxyResource
+      HttpMethod: ANY
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref MediSlotApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt DoctorLambda.Arn
+
+  # =========================================================
   # PATIENT ROUTES
   #
   # GET /patients
@@ -394,7 +477,7 @@ Resources:
       FunctionName: !Ref DoctorLambda
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub
-        arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/*/doctors
+        arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/*/doctors*
 
   PatientApiPermission:
     Type: AWS::Lambda::Permission
@@ -425,6 +508,7 @@ Resources:
       - AuthProxyMethod
       - DoctorsGetMethod
       - DoctorsPutMethod
+      - DoctorsProxyMethod
       - PatientsGetMethod
       - PatientsPutMethod
       - PatientsDeleteMethod

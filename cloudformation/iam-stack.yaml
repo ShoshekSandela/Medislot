@@ -176,6 +176,43 @@ Resources:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
 
+  # 6. Slot Materializer Lambda execution role
+  SlotMaterializerLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Execution role for MediSlot Slot Materializer Lambda
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: ReadDatabaseCredentials
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:rds!*'
+        - PolicyName: WriteSlots
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+
 Outputs:
   AuthorizerLambdaRoleArn:
     Description: ARN of the Lambda Authorizer execution role
@@ -196,3 +233,7 @@ Outputs:
   AvailabilityLambdaRoleArn:
     Description: ARN of the Availability Lambda execution role
     Value: !GetAtt AvailabilityLambdaRole.Arn
+
+  SlotMaterializerLambdaRoleArn:
+    Description: ARN of the Slot Materializer Lambda execution role
+    Value: !GetAtt SlotMaterializerLambdaRole.Arn
