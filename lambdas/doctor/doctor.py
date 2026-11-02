@@ -62,7 +62,7 @@ def path(event):
 
 def get_profile(connection, doctor_id):
     with connection.cursor() as cursor:
-        cursor.execute("SELECT doctor_id, registration_number, first_name, last_name, email, qualification, experience_years, profile_photo_url, profile_status, created_at, updated_at FROM doctors WHERE doctor_id = %s", (doctor_id,))
+        cursor.execute("SELECT doctor_id, registration_number, first_name, last_name, qualification, experience_years, profile_photo_url, profile_status, created_at, updated_at FROM doctors WHERE doctor_id = %s", (doctor_id,))
         return cursor.fetchone()
 
 
