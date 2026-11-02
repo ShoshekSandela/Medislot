@@ -1,48 +1,54 @@
-
-name: MediSlot Infrastructure Deployment
+name: MediSlot Deployment
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - main
       - network
       - feature/iam-stack
-    paths:
-      - 'cloudformation/**'
-      - 'lambdas/**'
-      - 'database/**'
-      - 'requirements.txt'
-      - '.github/workflows/deploy.yaml'
 
 permissions:
   id-token: write
   contents: read
 
+
 env:
   AWS_REGION: us-east-1
+
   NETWORK_STACK_NAME: medislot-network-dev
   DATA_STACK_NAME: medislot-data-dev
   IAM_STACK_NAME: medislot-iam-dev
   APPLICATION_STACK_NAME: medislot-application-dev
 
+
 jobs:
-  deploy:
-    name: Deploy MediSlot Infrastructure
+
+  # ==========================================================
+  # JOB 1 - NETWORK STACK
+  # ==========================================================
+
+  deploy-network:
+    name: Deploy Network Stack
     runs-on: ubuntu-latest
 
+    outputs:
+      vpc_id: ${{ steps.outputs.outputs.vpc_id }}
+      private_subnet_a_id: ${{ steps.outputs.outputs.private_subnet_a_id }}
+      private_subnet_b_id: ${{ steps.outputs.outputs.private_subnet_b_id }}
+      lambda_security_group_id: ${{ steps.outputs.outputs.lambda_security_group_id }}
+
     steps:
+
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Connect to AWS
+      - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
-      - name: Check AWS Connection
-        run: aws sts get-caller-identity
 
       - name: Validate Network Stack
         run: |
@@ -59,33 +65,55 @@ jobs:
             --parameter-overrides Environment=dev \
             --no-fail-on-empty-changeset
 
-      - name: Get Network Resource IDs
+      - name: Get Network Outputs
+        id: outputs
         shell: bash
         run: |
           set -euo pipefail
 
-          OUTPUTS=$(aws cloudformation describe-stacks \
+          DATA=$(aws cloudformation describe-stacks \
             --stack-name "$NETWORK_STACK_NAME" \
             --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs" \
+            --query 'Stacks[0].Outputs' \
             --output json)
 
-          get_output() {
-            echo "$OUTPUTS" | jq -er --arg key "$1" \
+          output() {
+            printf '%s' "$DATA" | jq -er --arg key "$1" \
               '.[] | select(.OutputKey == $key) | .OutputValue'
           }
 
-          VPC_ID=$(get_output VpcId)
-          PRIVATE_SUBNET_A_ID=$(get_output PrivateSubnetAId)
-          PRIVATE_SUBNET_B_ID=$(get_output PrivateSubnetBId)
-          LAMBDA_SECURITY_GROUP_ID=$(get_output LambdaSecurityGroupId)
+          echo "vpc_id=$(output VpcId)" >> "$GITHUB_OUTPUT"
+          echo "private_subnet_a_id=$(output PrivateSubnetAId)" >> "$GITHUB_OUTPUT"
+          echo "private_subnet_b_id=$(output PrivateSubnetBId)" >> "$GITHUB_OUTPUT"
+          echo "lambda_security_group_id=$(output LambdaSecurityGroupId)" >> "$GITHUB_OUTPUT"
 
-          {
-            echo "VPC_ID=$VPC_ID"
-            echo "PRIVATE_SUBNET_A_ID=$PRIVATE_SUBNET_A_ID"
-            echo "PRIVATE_SUBNET_B_ID=$PRIVATE_SUBNET_B_ID"
-            echo "LAMBDA_SECURITY_GROUP_ID=$LAMBDA_SECURITY_GROUP_ID"
-          } >> "$GITHUB_ENV"
+
+  # ==========================================================
+  # JOB 2 - DATA STACK
+  # ==========================================================
+
+  deploy-data:
+    name: Deploy Data Stack
+    runs-on: ubuntu-latest
+    needs: deploy-network
+
+    outputs:
+      application_files_bucket: ${{ steps.outputs.outputs.application_files_bucket }}
+      database_endpoint: ${{ steps.outputs.outputs.database_endpoint }}
+      database_secret_arn: ${{ steps.outputs.outputs.database_secret_arn }}
+      auth_tokens_table: ${{ steps.outputs.outputs.auth_tokens_table }}
+      slots_table: ${{ steps.outputs.outputs.slots_table }}
+
+    steps:
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Validate Data Stack
         run: |
@@ -93,49 +121,69 @@ jobs:
             --template-body file://cloudformation/data-stack.yaml \
             --region "$AWS_REGION"
 
-      - name: Check Data Stack Parameters
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          PARAMETERS=$(aws cloudformation validate-template \
-            --template-body file://cloudformation/data-stack.yaml \
-            --region "$AWS_REGION" \
-            --query 'Parameters[].ParameterKey' \
-            --output text)
-
-          echo "Parameters detected in data-stack.yaml:"
-          printf '%s\n' "$PARAMETERS"
-
-          for PARAM in Environment VpcId PrivateDatabaseSubnetIds ApplicationSecurityGroupId; do
-            if ! printf '%s\n' "$PARAMETERS" | tr '\t' '\n' | grep -Fxq "$PARAM"; then
-              echo "ERROR: $PARAM is missing from cloudformation/data-stack.yaml"
-              exit 1
-            fi
-          done
-
-          echo "All required Data Stack parameters are present."
-
       - name: Deploy Data Stack
-        shell: bash
         run: |
-          set -euo pipefail
-
-          test -n "$VPC_ID"
-          test -n "$PRIVATE_SUBNET_A_ID"
-          test -n "$PRIVATE_SUBNET_B_ID"
-          test -n "$LAMBDA_SECURITY_GROUP_ID"
-
           aws cloudformation deploy \
             --template-file cloudformation/data-stack.yaml \
             --stack-name "$DATA_STACK_NAME" \
             --region "$AWS_REGION" \
             --parameter-overrides \
               Environment=dev \
-              VpcId="$VPC_ID" \
-              PrivateDatabaseSubnetIds="$PRIVATE_SUBNET_A_ID,$PRIVATE_SUBNET_B_ID" \
-              ApplicationSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
+              VpcId="${{ needs.deploy-network.outputs.vpc_id }}" \
+              PrivateDatabaseSubnetIds="${{ needs.deploy-network.outputs.private_subnet_a_id }},${{ needs.deploy-network.outputs.private_subnet_b_id }}" \
+              ApplicationSecurityGroupId="${{ needs.deploy-network.outputs.lambda_security_group_id }}" \
             --no-fail-on-empty-changeset
+
+      - name: Get Data Outputs
+        id: outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DATA=$(aws cloudformation describe-stacks \
+            --stack-name "$DATA_STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].Outputs' \
+            --output json)
+
+          output() {
+            printf '%s' "$DATA" | jq -er --arg key "$1" \
+              '.[] | select(.OutputKey == $key) | .OutputValue'
+          }
+
+          echo "application_files_bucket=$(output ApplicationFilesBucketName)" >> "$GITHUB_OUTPUT"
+          echo "database_endpoint=$(output DatabaseEndpoint)" >> "$GITHUB_OUTPUT"
+          echo "database_secret_arn=$(output DatabaseSecretArn)" >> "$GITHUB_OUTPUT"
+          echo "auth_tokens_table=$(output AuthTokensTableName)" >> "$GITHUB_OUTPUT"
+          echo "slots_table=$(output SlotsTableName)" >> "$GITHUB_OUTPUT"
+
+
+  # ==========================================================
+  # JOB 3 - IAM STACK
+  # ==========================================================
+
+  deploy-iam:
+    name: Deploy IAM Stack
+    runs-on: ubuntu-latest
+    needs: deploy-data
+
+    outputs:
+      auth_lambda_role_arn: ${{ steps.outputs.outputs.auth_lambda_role_arn }}
+      authorizer_lambda_role_arn: ${{ steps.outputs.outputs.authorizer_lambda_role_arn }}
+      doctor_lambda_role_arn: ${{ steps.outputs.outputs.doctor_lambda_role_arn }}
+      patient_lambda_role_arn: ${{ steps.outputs.outputs.patient_lambda_role_arn }}
+      slot_materializer_lambda_role_arn: ${{ steps.outputs.outputs.slot_materializer_lambda_role_arn }}
+
+    steps:
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Validate IAM Stack
         run: |
@@ -153,29 +201,11 @@ jobs:
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
-      - name: Validate Application Stack
-        run: |
-          aws cloudformation validate-template \
-            --template-body file://cloudformation/application-stack.yaml \
-            --region "$AWS_REGION"
-
-      - name: Set up Python for Lambda packaging
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Deploy Application Stack
+      - name: Get IAM Outputs
+        id: outputs
         shell: bash
-        env:
-          JWT_SIGNING_SECRET: ${{ secrets.JWT_SIGNING_SECRET }}
         run: |
           set -euo pipefail
-
-          DATA=$(aws cloudformation describe-stacks \
-            --stack-name "$DATA_STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].Outputs' \
-            --output json)
 
           IAM=$(aws cloudformation describe-stacks \
             --stack-name "$IAM_STACK_NAME" \
@@ -184,126 +214,164 @@ jobs:
             --output json)
 
           output() {
-            printf '%s' "$1" | jq -er --arg key "$2" \
+            printf '%s' "$IAM" | jq -er --arg key "$1" \
               '.[] | select(.OutputKey == $key) | .OutputValue'
           }
 
-          BUCKET=$(output "$DATA" ApplicationFilesBucketName)
-          DB_HOST=$(output "$DATA" DatabaseEndpoint)
-          DB_SECRET=$(output "$DATA" DatabaseSecretArn)
-          TOKENS=$(output "$DATA" AuthTokensTableName)
+          echo "auth_lambda_role_arn=$(output AuthLambdaRoleArn)" >> "$GITHUB_OUTPUT"
+          echo "authorizer_lambda_role_arn=$(output AuthorizerLambdaRoleArn)" >> "$GITHUB_OUTPUT"
+          echo "doctor_lambda_role_arn=$(output DoctorLambdaRoleArn)" >> "$GITHUB_OUTPUT"
+          echo "patient_lambda_role_arn=$(output PatientLambdaRoleArn)" >> "$GITHUB_OUTPUT"
+          echo "slot_materializer_lambda_role_arn=$(output SlotMaterializerLambdaRoleArn)" >> "$GITHUB_OUTPUT"
 
-          # Create/update the JWT SecureString from a GitHub Actions secret.
+
+  # ==========================================================
+  # JOB 4 - APPLICATION STACK
+  # ==========================================================
+
+  deploy-application:
+    name: Deploy Application Stack
+    runs-on: ubuntu-latest
+
+    needs:
+      - deploy-network
+      - deploy-data
+      - deploy-iam
+
+    steps:
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate Application Stack
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://cloudformation/application-stack.yaml \
+            --region "$AWS_REGION"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check JWT Secret
+        env:
+          JWT_SIGNING_SECRET: ${{ secrets.JWT_SIGNING_SECRET }}
+        run: |
           if [ -z "$JWT_SIGNING_SECRET" ]; then
-            echo "ERROR: Add repository secret JWT_SIGNING_SECRET before deployment."
+            echo "ERROR: Add JWT_SIGNING_SECRET to GitHub repository secrets."
             exit 1
           fi
 
+      - name: Store JWT Secret
+        env:
+          JWT_SIGNING_SECRET: ${{ secrets.JWT_SIGNING_SECRET }}
+        run: |
           aws ssm put-parameter \
             --name "/medislot/dev/jwt/signing-secret" \
             --type SecureString \
             --value "$JWT_SIGNING_SECRET" \
             --overwrite \
-            --region "$AWS_REGION" >/dev/null
+            --region "$AWS_REGION"
 
-          # Package Lambda code with its Python dependencies.
+      - name: Package Lambda Code
+        shell: bash
+        run: |
+          set -euo pipefail
+
           PACKAGE_DIR="$RUNNER_TEMP/medislot-lambda-package"
 
           rm -rf "$PACKAGE_DIR"
           mkdir -p "$PACKAGE_DIR"
 
-          # Copy all Lambda source code.
+          # Copy Lambda source code
           cp -r lambdas "$PACKAGE_DIR/"
 
-          # Include schema.sql at the package root so the authentication
-          # Lambda can find it at /var/task/database/schema.sql.
+          # Copy database schema
           if [ ! -f "database/schema.sql" ]; then
-            echo "ERROR: database/schema.sql was not found in the repository."
+            echo "ERROR: database/schema.sql was not found."
             exit 1
           fi
 
           mkdir -p "$PACKAGE_DIR/database"
           cp database/schema.sql "$PACKAGE_DIR/database/schema.sql"
 
-          # Verify that the schema is included in the package.
-          if [ ! -f "$PACKAGE_DIR/database/schema.sql" ]; then
-            echo "ERROR: database/schema.sql was not copied into the Lambda package."
-            exit 1
-          fi
-
-          echo "Database schema verified in Lambda package."
-
-          # Install dependencies at the ZIP root.
+          # Install Python dependencies
           python -m pip install --upgrade pip
+
           python -m pip install \
             --target "$PACKAGE_DIR" \
             -r requirements.txt
 
-          # Verify that PyMySQL is included.
+          # Verify PyMySQL
           if [ ! -d "$PACKAGE_DIR/pymysql" ]; then
-            echo "ERROR: PyMySQL is missing from the Lambda package."
+            echo "ERROR: PyMySQL is missing from Lambda package."
             exit 1
           fi
 
-          echo "PyMySQL dependency verified."
-
-          # Verify that the Doctor Lambda source exists.
+          # Verify Doctor Lambda
           if [ ! -f "$PACKAGE_DIR/lambdas/doctor/doctor.py" ]; then
             echo "ERROR: Doctor Lambda source file was not found."
             exit 1
           fi
 
-          # Create the deployment ZIP.
-          (cd "$PACKAGE_DIR" && zip -qr "$RUNNER_TEMP/medislot-lambdas.zip" .)
+          # Verify Slot Materializer Lambda
+          if [ ! -f "$PACKAGE_DIR/lambdas/slot_materializer/slot_materializer.py" ]; then
+            echo "ERROR: Slot Materializer Lambda source file was not found."
+            exit 1
+          fi
 
-          # Upload using a unique key so CloudFormation can detect code changes.
+          # Create ZIP
+          (
+            cd "$PACKAGE_DIR"
+            zip -qr "$RUNNER_TEMP/medislot-lambdas.zip" .
+          )
+
+      - name: Upload Lambda Package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
           LAMBDA_CODE_KEY="medislot-lambdas-${GITHUB_SHA}.zip"
 
           aws s3 cp \
             "$RUNNER_TEMP/medislot-lambdas.zip" \
-            "s3://$BUCKET/$LAMBDA_CODE_KEY"
+            "s3://${{ needs.deploy-data.outputs.application_files_bucket }}/$LAMBDA_CODE_KEY"
 
-          echo "Lambda package uploaded: $LAMBDA_CODE_KEY"
+          echo "lambda_code_key=$LAMBDA_CODE_KEY" >> "$GITHUB_OUTPUT"
 
-          # Deploy the application stack.
+      - name: Deploy Application Stack
+        shell: bash
+        run: |
+          set -euo pipefail
+
           aws cloudformation deploy \
             --template-file cloudformation/application-stack.yaml \
             --stack-name "$APPLICATION_STACK_NAME" \
             --region "$AWS_REGION" \
             --parameter-overrides \
               Environment=dev \
-              LambdaCodeBucket="$BUCKET" \
-              LambdaCodeKey="$LAMBDA_CODE_KEY" \
-              PrivateSubnetAId="$PRIVATE_SUBNET_A_ID" \
-              PrivateSubnetBId="$PRIVATE_SUBNET_B_ID" \
-              LambdaSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
-              AuthLambdaRoleArn="$(output "$IAM" AuthLambdaRoleArn)" \
-              AuthorizerLambdaRoleArn="$(output "$IAM" AuthorizerLambdaRoleArn)" \
-              DoctorLambdaRoleArn="$(output "$IAM" DoctorLambdaRoleArn)" \
-              PatientLambdaRoleArn="$(output "$IAM" PatientLambdaRoleArn)" \
-              DatabaseSecretArn="$DB_SECRET" \
-              DatabaseHost="$DB_HOST" \
+              LambdaCodeBucket="${{ needs.deploy-data.outputs.application_files_bucket }}" \
+              LambdaCodeKey="${{ steps.package.outputs.lambda_code_key }}" \
+              PrivateSubnetAId="${{ needs.deploy-network.outputs.private_subnet_a_id }}" \
+              PrivateSubnetBId="${{ needs.deploy-network.outputs.private_subnet_b_id }}" \
+              LambdaSecurityGroupId="${{ needs.deploy-network.outputs.lambda_security_group_id }}" \
+              AuthLambdaRoleArn="${{ needs.deploy-iam.outputs.auth_lambda_role_arn }}" \
+              AuthorizerLambdaRoleArn="${{ needs.deploy-iam.outputs.authorizer_lambda_role_arn }}" \
+              DoctorLambdaRoleArn="${{ needs.deploy-iam.outputs.doctor_lambda_role_arn }}" \
+              PatientLambdaRoleArn="${{ needs.deploy-iam.outputs.patient_lambda_role_arn }}" \
+              SlotMaterializerLambdaRoleArn="${{ needs.deploy-iam.outputs.slot_materializer_lambda_role_arn }}" \
+              DatabaseSecretArn="${{ needs.deploy-data.outputs.database_secret_arn }}" \
+              DatabaseHost="${{ needs.deploy-data.outputs.database_endpoint }}" \
               DatabaseName=medislot \
-              AuthTokensTableName="$TOKENS" \
+              AuthTokensTableName="${{ needs.deploy-data.outputs.auth_tokens_table }}" \
+              SlotsTableName="${{ needs.deploy-data.outputs.slots_table }}" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
-
-      - name: Display Deployment Status
-        if: always()
-        shell: bash
-        run: |
-          for STACK in \
-            "$NETWORK_STACK_NAME" \
-            "$DATA_STACK_NAME" \
-            "$IAM_STACK_NAME" \
-            "$APPLICATION_STACK_NAME"
-          do
-            echo "======================================"
-            echo "Stack: $STACK"
-
-            aws cloudformation describe-stacks \
-              --stack-name "$STACK" \
-              --region "$AWS_REGION" \
-              --query 'Stacks[0].[StackName,StackStatus]' \
-              --output table || true
-          done
