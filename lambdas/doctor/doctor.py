@@ -42,8 +42,16 @@ def body(event):
 
 
 def doctor_id_from_auth(connection, identity):
+    """
+    The authorizer normally provides the authenticated user's userId.
+    The doctors table has a separate doctor_id and user_id, so resolve
+    either value safely.
+    """
     with connection.cursor() as cursor:
-        cursor.execute("SELECT doctor_id FROM doctors WHERE doctor_id = %s", (identity,))
+        cursor.execute(
+            "SELECT doctor_id FROM doctors WHERE user_id = %s OR doctor_id = %s LIMIT 1",
+            (identity, identity),
+        )
         row = cursor.fetchone()
         return row["doctor_id"] if row else None
 
