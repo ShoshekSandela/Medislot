@@ -429,45 +429,103 @@ def refresh(event):
 
 def logout(event):
     token = bearer_token(event)
+
     if not token:
         return response(401, {"message": "Bearer access token is required"})
+
     try:
+        # Validate the access token first.
         claims = decode_access_token(token)
+
+        access_user_id = str(claims["sub"])
+        access_role = str(claims["role"])
         now = int(time.time())
+
+        # Read and validate the refresh token supplied for logout.
+        data = parse_body(event)
+        refresh_raw = data.get("refreshToken")
+
+        if not isinstance(refresh_raw, str) or not refresh_raw:
+            return response(400, {"message": "refreshToken is required"})
+
+        refresh_id = "REFRESH#" + sha256_hex(refresh_raw)
+
+        # Read the refresh-token record before revoking anything.
+        result = token_table.get_item(
+            Key={"tokenId": refresh_id},
+            ConsistentRead=True,
+        )
+
+        refresh_record = result.get("Item")
+
+        if (
+            not refresh_record
+            or refresh_record.get("tokenType") != "REFRESH"
+            or refresh_record.get("revoked") is True
+            or int(refresh_record.get("expiresAt", 0)) <= now
+        ):
+            return response(401, {"message": "Invalid or expired refresh token"})
+
+        # Access token and refresh token must belong to the same user.
+        refresh_user_id = str(refresh_record.get("userId"))
+        refresh_role = str(refresh_record.get("role"))
+
+        if (
+            access_user_id != refresh_user_id
+            or access_role != refresh_role
+        ):
+            return response(
+                401,
+                {
+                    "message": (
+                        "Access token and refresh token do not belong "
+                        "to the same user"
+                    )
+                },
+            )
+
+        # Revoke the access token only after ownership validation succeeds.
         jti = claims["jti"]
         expiry = int(claims["exp"])
-        # Immediate revocation is enforced by the Authorizer's strongly consistent lookup.
+
         token_table.put_item(
             Item={
                 "tokenId": "DENYLIST#" + jti,
                 "tokenType": "DENYLIST",
-                "userId": claims["sub"],
+                "userId": access_user_id,
                 "createdAt": now,
                 "expiresAt": expiry,
                 "revoked": True,
             },
         )
-        data = parse_body(event)
-        refresh_raw = data.get("refreshToken")
-        if isinstance(refresh_raw, str) and refresh_raw:
-            refresh_id = "REFRESH#" + sha256_hex(refresh_raw)
-            token_table.update_item(
-                Key={"tokenId": refresh_id},
-                UpdateExpression="SET revoked = :true, revokedAt = :now",
-                ConditionExpression="attribute_exists(tokenId)",
-                ExpressionAttributeValues={":true": True, ":now": now},
-            )
+
+        # Revoke the matching refresh token.
+        token_table.update_item(
+            Key={"tokenId": refresh_id},
+            UpdateExpression="SET revoked = :true, revokedAt = :now",
+            ConditionExpression="attribute_exists(tokenId)",
+            ExpressionAttributeValues={
+                ":true": True,
+                ":now": now,
+            },
+        )
+
         return response(200, {"message": "Logged out"})
+
     except jwt.ExpiredSignatureError:
         return response(401, {"message": "Access token has expired"})
+
     except jwt.InvalidTokenError:
         return response(401, {"message": "Invalid access token"})
+
     except ClientError:
-        logger.exception("Logout token revocation failed")
+        logger.exception("Logout token operation failed")
         return response(500, {"message": "Internal server error"})
+
     except Exception:
         logger.exception("Logout failed")
         return response(500, {"message": "Internal server error"})
+
 
 
 def lambda_handler(event, context):
