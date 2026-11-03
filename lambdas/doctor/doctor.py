@@ -182,29 +182,39 @@ def update_profile(connection, doctor_id, data):
 
 
 def consultation_types(connection, doctor_id, method, data, item_id=None):
+    """Manage the shared consultation_types catalog.
+
+    The current RDS table has no doctor_id column, so these records are
+    shared across doctors. Doctor identity is still required by the API
+    authorizer, but ownership cannot be enforced without a mapping/table.
+    """
     with connection.cursor() as cursor:
         if method == "GET":
             if item_id:
                 cursor.execute(
                     """
-                    SELECT *
+                    SELECT consultation_type_id, type_name, duration_minutes,
+                           capacity, description, is_active, consultation_fee,
+                           created_at
                     FROM consultation_types
                     WHERE consultation_type_id = %s
-                      AND (doctor_id = %s OR doctor_id IS NULL)
                     """,
-                    (item_id, doctor_id),
+                    (item_id,),
                 )
                 row = cursor.fetchone()
-                return response(200, row) if row else response(404, {"message": "Consultation type not found"})
+                return response(200, row) if row else response(
+                    404, {"message": "Consultation type not found"}
+                )
+
             cursor.execute(
                 """
-                SELECT *
+                SELECT consultation_type_id, type_name, duration_minutes,
+                       capacity, description, is_active, consultation_fee,
+                       created_at
                 FROM consultation_types
                 WHERE is_active = TRUE
-                  AND (doctor_id = %s OR doctor_id IS NULL)
                 ORDER BY type_name
-                """,
-                (doctor_id,),
+                """
             )
             return response(200, cursor.fetchall())
 
@@ -212,55 +222,105 @@ def consultation_types(connection, doctor_id, method, data, item_id=None):
             required = ["type_name", "duration_minutes", "consultation_fee"]
             missing = [key for key in required if data.get(key) in (None, "")]
             if missing:
-                return response(400, {"message": "Missing required fields", "fields": missing})
+                return response(400, {
+                    "message": "Missing required fields", "fields": missing
+                })
             try:
                 type_name = str(data["type_name"]).strip()
                 duration = int(data["duration_minutes"])
                 capacity = int(data.get("capacity", 1))
                 fee = float(data["consultation_fee"])
             except (TypeError, ValueError):
-                return response(400, {"message": "duration_minutes, capacity and consultation_fee must be numeric"})
+                return response(400, {
+                    "message": "duration_minutes, capacity and consultation_fee must be numeric"
+                })
             if not type_name or duration <= 0 or capacity <= 0 or fee < 0:
-                return response(400, {"message": "Type name is required; duration/capacity must be positive and fee cannot be negative"})
+                return response(400, {
+                    "message": "Type name is required; duration/capacity must be positive and fee cannot be negative"
+                })
             if type_name.lower() == "health camp session":
                 if duration != 60 or not 2 <= capacity <= 10:
-                    return response(400, {"message": "Health Camp Session must be 60 minutes with capacity 2 to 10"})
+                    return response(400, {
+                        "message": "Health Camp Session must be 60 minutes with capacity 2 to 10"
+                    })
             elif capacity != 1:
-                return response(400, {"message": "Only Health Camp Session may have capacity greater than 1"})
+                return response(400, {
+                    "message": "Only Health Camp Session may have capacity greater than 1"
+                })
+
             cursor.execute(
                 """
                 INSERT INTO consultation_types
-                    (doctor_id, type_name, duration_minutes, capacity, description, is_active, consultation_fee)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (type_name, duration_minutes, capacity, description,
+                     is_active, consultation_fee)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                (doctor_id, type_name, duration, capacity, data.get("description"),
+                (type_name, duration, capacity, data.get("description"),
                  bool(data.get("is_active", True)), fee),
             )
             connection.commit()
-            return response(201, {"message": "Consultation type created", "consultation_type_id": int(cursor.lastrowid)})
+            return response(201, {
+                "message": "Consultation type created",
+                "consultation_type_id": int(cursor.lastrowid),
+            })
 
         if method == "PUT" and item_id:
-            allowed = {"type_name", "duration_minutes", "capacity", "description", "is_active", "consultation_fee"}
+            allowed = {
+                "type_name", "duration_minutes", "capacity", "description",
+                "is_active", "consultation_fee",
+            }
             updates = {key: value for key, value in data.items() if key in allowed}
             if not updates:
                 return response(400, {"message": "No valid fields"})
+            if "type_name" in updates:
+                updates["type_name"] = str(updates["type_name"]).strip()
+                if not updates["type_name"]:
+                    return response(400, {"message": "type_name cannot be empty"})
+            try:
+                if "duration_minutes" in updates:
+                    updates["duration_minutes"] = int(updates["duration_minutes"])
+                    if updates["duration_minutes"] <= 0:
+                        raise ValueError
+                if "capacity" in updates:
+                    updates["capacity"] = int(updates["capacity"])
+                    if updates["capacity"] <= 0:
+                        raise ValueError
+                if "consultation_fee" in updates:
+                    updates["consultation_fee"] = float(updates["consultation_fee"])
+                    if updates["consultation_fee"] < 0:
+                        raise ValueError
+            except (TypeError, ValueError):
+                return response(400, {
+                    "message": "duration_minutes and capacity must be positive integers; consultation_fee must be non-negative"
+                })
+
             cursor.execute(
-                f"UPDATE consultation_types SET {', '.join(f'{key} = %s' for key in updates)} WHERE consultation_type_id = %s AND doctor_id = %s",
-                list(updates.values()) + [item_id, doctor_id],
+                f"UPDATE consultation_types SET {', '.join(f'{key} = %s' for key in updates)} WHERE consultation_type_id = %s",
+                list(updates.values()) + [item_id],
             )
             connection.commit()
             if cursor.rowcount == 0:
-                return response(404, {"message": "Consultation type not found"})
+                cursor.execute(
+                    "SELECT consultation_type_id FROM consultation_types WHERE consultation_type_id = %s",
+                    (item_id,),
+                )
+                if not cursor.fetchone():
+                    return response(404, {"message": "Consultation type not found"})
             return response(200, {"message": "Consultation type updated"})
 
         if method == "DELETE" and item_id:
             cursor.execute(
-                "UPDATE consultation_types SET is_active = FALSE WHERE consultation_type_id = %s AND doctor_id = %s",
-                (item_id, doctor_id),
+                "UPDATE consultation_types SET is_active = FALSE WHERE consultation_type_id = %s",
+                (item_id,),
             )
             connection.commit()
             if cursor.rowcount == 0:
-                return response(404, {"message": "Consultation type not found"})
+                cursor.execute(
+                    "SELECT consultation_type_id FROM consultation_types WHERE consultation_type_id = %s",
+                    (item_id,),
+                )
+                if not cursor.fetchone():
+                    return response(404, {"message": "Consultation type not found"})
             return response(200, {"message": "Consultation type deactivated"})
 
     return response(405, {"message": "Method not allowed"})
@@ -322,11 +382,10 @@ def availability(connection, doctor_id, method, data, item_id=None):
                 SELECT 1
                 FROM consultation_types
                 WHERE consultation_type_id = %s
-                  AND (doctor_id = %s OR doctor_id IS NULL)
                   AND is_active = TRUE
                 LIMIT 1
                 """,
-                (consultation_type_id, doctor_id),
+                (consultation_type_id,),
             )
             if not cursor.fetchone():
                 return response(400, {"message": "Consultation type does not belong to this doctor"})
