@@ -1,6 +1,5 @@
 import json
 import os
-import uuid
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -56,11 +55,13 @@ def get_date_range(event):
         "days",
         os.environ.get("SLOT_WINDOW_DAYS", "30")
     ))
+    if days < 1 or days > 90:
+        raise ValueError("days must be between 1 and 90")
 
     return start_day, days
 
 
-def get_availability(connection, day_of_week):
+def get_availability(connection, day_of_week, target_date):
     sql = """
         SELECT
             da.availability_id,
@@ -77,15 +78,15 @@ def get_availability(connection, day_of_week):
         WHERE da.day_of_week = %s
           AND da.is_active = TRUE
           AND ct.is_active = TRUE
-          AND da.effective_from <= CURDATE()
+          AND da.effective_from <= %s
           AND (
               da.effective_until IS NULL
-              OR da.effective_until >= CURDATE()
+              OR da.effective_until >= %s
           )
     """
 
     with connection.cursor() as cursor:
-        cursor.execute(sql, (day_of_week,))
+        cursor.execute(sql, (day_of_week, target_date, target_date))
         return cursor.fetchall()
 
 
@@ -179,7 +180,8 @@ def materialize_day(connection, slots_table, target_date):
 
     availability_records = get_availability(
         connection,
-        day_of_week
+        day_of_week,
+        target_date
     )
 
     results = {
@@ -214,11 +216,16 @@ def materialize_day(connection, slots_table, target_date):
             availability["duration_minutes"]
         )
 
+        # Option 3: add a 15-minute buffer after each consultation.
+        # The buffer is not a bookable slot and must fit inside the doctor's
+        # availability window before another appointment can start.
+        buffer_minutes = int(os.environ.get("SLOT_BUFFER_MINUTES", "15"))
+        if duration_minutes <= 0 or buffer_minutes < 0:
+            raise ValueError("Consultation duration must be positive and buffer cannot be negative")
+
         current_start = start_local
 
-        while current_start + timedelta(
-            minutes=duration_minutes
-        ) <= end_local:
+        while current_start + timedelta(minutes=duration_minutes) <= end_local:
 
             current_end = current_start + timedelta(
                 minutes=duration_minutes
@@ -241,7 +248,7 @@ def materialize_day(connection, slots_table, target_date):
             elif result == "blackout":
                 results["blackouts"] += 1
 
-            current_start = current_end
+            current_start = current_end + timedelta(minutes=buffer_minutes)
 
     return results
 
@@ -253,7 +260,10 @@ def lambda_handler(event, context):
         os.environ["SLOTS_TABLE_NAME"]
     )
 
-    start_day, days = get_date_range(event)
+    try:
+        start_day, days = get_date_range(event)
+    except (TypeError, ValueError) as exc:
+        return {"statusCode": 400, "body": json.dumps({"message": str(exc)})}
 
     connection = get_db_connection()
 

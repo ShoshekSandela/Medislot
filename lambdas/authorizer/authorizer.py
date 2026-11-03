@@ -83,7 +83,7 @@ def lambda_handler(event, context):
                 ],
             },
             "context": {
-                "userId": user_id,
+                "profileId": user_id,
                 "role": role,
                 "jti": token_id,
             },

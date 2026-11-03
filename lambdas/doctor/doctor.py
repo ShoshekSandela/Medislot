@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import uuid
 
 import boto3
 import pymysql
@@ -47,7 +46,7 @@ def get_auth(event):
         authorizer = {**authorizer, **authorizer["lambda"]}
 
     identity = (
-        authorizer.get("userId")
+        authorizer.get("profileId")
         or authorizer.get("principalId")
         or authorizer.get("sub")
     )
@@ -74,24 +73,13 @@ def get_request_path(event):
     return request_path.rstrip("/") or "/"
 
 
-def doctor_id_from_auth(connection, user_id):
-    """
-    Authentication issues a userId in the JWT. Resolve that userId
-    to the doctor's separate doctor_id using the doctors.user_id FK.
-    """
-    with connection.cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT doctor_id
-            FROM doctors
-            WHERE user_id = %s
-            LIMIT 1
-            """,
-            (user_id,),
-        )
-        row = cursor.fetchone()
-
-    return row["doctor_id"] if row else None
+def doctor_id_from_auth(connection, profile_id):
+    """JWT subject is the numeric doctors.doctor_id; no users table is used."""
+    try:
+        value = int(profile_id)
+        return value if value > 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def get_profile(connection, doctor_id):
@@ -103,7 +91,6 @@ def get_profile(connection, doctor_id):
                 d.registration_number,
                 d.first_name,
                 d.last_name,
-                u.email,
                 d.qualification,
                 d.experience_years,
                 d.profile_photo_url,
@@ -111,7 +98,6 @@ def get_profile(connection, doctor_id):
                 d.created_at,
                 d.updated_at
             FROM doctors AS d
-            INNER JOIN users AS u ON u.user_id = d.user_id
             WHERE d.doctor_id = %s
             """,
             (doctor_id,),
@@ -128,13 +114,11 @@ def list_doctors(connection):
                 d.registration_number,
                 d.first_name,
                 d.last_name,
-                u.email,
                 d.qualification,
                 d.experience_years,
                 d.profile_photo_url,
                 d.profile_status
             FROM doctors AS d
-            INNER JOIN users AS u ON u.user_id = d.user_id
             WHERE UPPER(d.profile_status) = 'ACTIVE'
             ORDER BY d.first_name, d.last_name
             """
@@ -154,6 +138,18 @@ def update_profile(connection, doctor_id, data):
 
     if not updates:
         return response(400, {"message": "No valid profile fields provided"})
+    for field in ("first_name", "last_name", "qualification", "profile_photo_url"):
+        if field in updates and updates[field] is not None and not isinstance(updates[field], str):
+            return response(400, {"message": f"{field} must be a string"})
+    if "first_name" in updates and not updates["first_name"].strip():
+        return response(400, {"message": "first_name cannot be empty"})
+    if "experience_years" in updates:
+        try:
+            updates["experience_years"] = int(updates["experience_years"])
+            if updates["experience_years"] < 0 or updates["experience_years"] > 100:
+                raise ValueError
+        except (TypeError, ValueError):
+            return response(400, {"message": "experience_years must be between 0 and 100"})
 
     columns = ", ".join(f"{column} = %s" for column in updates)
 
@@ -215,32 +211,28 @@ def consultation_types(connection, method, data, item_id=None):
                     {"message": "Missing required fields", "fields": missing},
                 )
 
-            consultation_id = str(uuid.uuid4())
+            try:
+                duration = int(data["duration_minutes"])
+                capacity = int(data.get("capacity", 1))
+                fee = float(data["consultation_fee"])
+            except (TypeError, ValueError):
+                return response(400, {"message": "duration_minutes, capacity and consultation_fee must be numeric"})
+            if duration <= 0 or capacity <= 0 or fee < 0:
+                return response(400, {"message": "Duration and capacity must be positive; fee cannot be negative"})
             cursor.execute(
                 """
                 INSERT INTO consultation_types
-                    (consultation_type_id, type_name, duration_minutes,
-                     capacity, description, is_active, consultation_fee)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (type_name, duration_minutes, capacity, description, is_active, consultation_fee)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
-                (
-                    consultation_id,
-                    data["type_name"],
-                    data["duration_minutes"],
-                    data.get("capacity", 1),
-                    data.get("description"),
-                    data.get("is_active", True),
-                    data["consultation_fee"],
-                ),
+                (str(data["type_name"]).strip(), duration, capacity,
+                 data.get("description"), bool(data.get("is_active", True)), fee),
             )
             connection.commit()
-            return response(
-                201,
-                {
-                    "message": "Consultation type created",
-                    "consultation_type_id": consultation_id,
-                },
-            )
+            return response(201, {
+                "message": "Consultation type created",
+                "consultation_type_id": int(cursor.lastrowid),
+            })
 
         if method == "PUT" and item_id:
             allowed = {
@@ -313,36 +305,40 @@ def availability(connection, doctor_id, method, data, item_id=None):
                     {"message": "Missing required fields", "fields": missing},
                 )
 
-            availability_id = str(uuid.uuid4())
+            try:
+                hospital_id = int(data["hospital_id"])
+                consultation_type_id = int(data["consultation_type_id"])
+                day = int(data["day_of_week"])
+            except (TypeError, ValueError):
+                return response(400, {"message": "hospital_id, consultation_type_id and day_of_week must be integers"})
+            if day < 0 or day > 6:
+                return response(400, {"message": "day_of_week must be between 0 (Sunday) and 6 (Saturday)"})
+            if data["end_time"] <= data["start_time"]:
+                return response(400, {"message": "end_time must be later than start_time"})
+            if data.get("effective_until") and data["effective_until"] < data["effective_from"]:
+                return response(400, {"message": "effective_until cannot be before effective_from"})
+            cursor.execute(
+                "SELECT 1 FROM doctor_hospitals WHERE doctor_id = %s AND hospital_id = %s AND is_active = TRUE LIMIT 1",
+                (doctor_id, hospital_id),
+            )
+            if not cursor.fetchone():
+                return response(400, {"message": "Doctor is not assigned to this hospital"})
             cursor.execute(
                 """
                 INSERT INTO doctor_availability
-                    (availability_id, doctor_id, hospital_id,
-                     consultation_type_id, day_of_week, start_time,
-                     end_time, effective_from, effective_until, is_active)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (doctor_id, hospital_id, consultation_type_id, day_of_week,
+                     start_time, end_time, effective_from, effective_until, is_active)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (
-                    availability_id,
-                    doctor_id,
-                    data["hospital_id"],
-                    data["consultation_type_id"],
-                    data["day_of_week"],
-                    data["start_time"],
-                    data["end_time"],
-                    data["effective_from"],
-                    data.get("effective_until"),
-                    data.get("is_active", True),
-                ),
+                (doctor_id, hospital_id, consultation_type_id, day,
+                 data["start_time"], data["end_time"], data["effective_from"],
+                 data.get("effective_until"), bool(data.get("is_active", True))),
             )
             connection.commit()
-            return response(
-                201,
-                {
-                    "message": "Availability created",
-                    "availability_id": availability_id,
-                },
-            )
+            return response(201, {
+                "message": "Availability created",
+                "availability_id": int(cursor.lastrowid),
+            })
 
         if method == "PUT" and item_id:
             allowed = {
@@ -409,28 +405,34 @@ def blackouts(connection, doctor_id, method, data, item_id=None):
                     {"message": "Missing required fields", "fields": missing},
                 )
 
-            blackout_id = str(uuid.uuid4())
+            if not data.get("hospital_id"):
+                return response(400, {"message": "hospital_id is required"})
+            if data["end_at_utc"] <= data["start_at_utc"]:
+                return response(400, {"message": "end_at_utc must be later than start_at_utc"})
+            try:
+                hospital_id = int(data["hospital_id"])
+            except (TypeError, ValueError):
+                return response(400, {"message": "hospital_id must be an integer"})
+            cursor.execute(
+                "SELECT 1 FROM doctor_hospitals WHERE doctor_id = %s AND hospital_id = %s AND is_active = TRUE LIMIT 1",
+                (doctor_id, hospital_id),
+            )
+            if not cursor.fetchone():
+                return response(400, {"message": "Doctor is not assigned to this hospital"})
             cursor.execute(
                 """
                 INSERT INTO doctor_blackouts
-                    (blackout_id, doctor_id, hospital_id,
-                     start_at_utc, end_at_utc, reason)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                    (doctor_id, hospital_id, start_at_utc, end_at_utc, reason)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
-                (
-                    blackout_id,
-                    doctor_id,
-                    data.get("hospital_id"),
-                    data["start_at_utc"],
-                    data["end_at_utc"],
-                    data.get("reason"),
-                ),
+                (doctor_id, hospital_id, data["start_at_utc"],
+                 data["end_at_utc"], data.get("reason")),
             )
             connection.commit()
-            return response(
-                201,
-                {"message": "Blackout created", "blackout_id": blackout_id},
-            )
+            return response(201, {
+                "message": "Blackout created",
+                "blackout_id": int(cursor.lastrowid),
+            })
 
         if method == "DELETE" and item_id:
             cursor.execute(
@@ -459,9 +461,19 @@ def lambda_handler(event, context):
 
         # GET /doctors and GET /doctors/{doctorId} are available to
         # authenticated patients, doctors, and admins.
+        if method == "GET" and request_path == "/doctors/me":
+            if role != "doctor":
+                return response(403, {"message": "Doctor access required"})
+            with get_db_connection() as connection:
+                doctor_id = doctor_id_from_auth(connection, identity)
+                if not doctor_id:
+                    return response(404, {"message": "Doctor profile not found"})
+                profile = get_profile(connection, doctor_id)
+                return response(200, profile) if profile else response(404, {"message": "Profile not found"})
+
         if method == "GET" and (
             request_path == "/doctors"
-            or (len(parts) == 2 and parts[0] == "doctors")
+            or (len(parts) == 2 and parts[0] == "doctors" and parts[1] != "me")
         ):
             if role not in {"patient", "doctor", "admin"}:
                 return response(403, {"message": "Valid account role required"})
@@ -471,7 +483,9 @@ def lambda_handler(event, context):
                     return response(200, list_doctors(connection))
 
                 doctor_id = parts[1]
-                profile = get_profile(connection, doctor_id)
+                if not doctor_id.isdigit() or int(doctor_id) <= 0:
+                    return response(400, {"message": "doctor_id must be a positive integer"})
+                profile = get_profile(connection, int(doctor_id))
                 if not profile or str(profile.get("profile_status", "")).upper() != "ACTIVE":
                     return response(404, {"message": "Active doctor not found"})
 
@@ -502,6 +516,9 @@ def lambda_handler(event, context):
             if len(parts) >= 2 and parts[0] == "doctors":
                 resource = parts[1]
                 item_id = parts[2] if len(parts) > 2 else None
+
+                if item_id is not None and (not item_id.isdigit() or int(item_id) <= 0):
+                    return response(400, {"message": "Resource ID must be a positive integer"})
 
                 if resource == "consultation-types":
                     return consultation_types(connection, method, data, item_id)

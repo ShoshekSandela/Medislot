@@ -106,9 +106,9 @@ def initialize_database(event):
             existing = {row[0] if not isinstance(row, dict) else next(iter(row.values()))
                         for row in cursor.fetchall()}
         expected = {
-            "users", "hospitals", "doctors", "patients",
-            "specialisations", "doctor_specialisations",
-            "consultation_types", "appointments"
+            "hospitals", "doctors", "patients", "specialisations",
+            "doctor_specialisations", "doctor_hospitals", "doctor_blackouts",
+            "doctor_availability", "consultation_types", "appointments", "refund_ledger"
         }
         missing = sorted(expected - existing)
         if missing:
@@ -175,7 +175,7 @@ def new_access_token(user_id, role):
     jti = str(uuid.uuid4())
     payload = {
         "sub": str(user_id),
-        "userId": str(user_id),
+        "profileId": str(user_id),
         "role": role,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=ACCESS_TOKEN_MINUTES)).timestamp()),
@@ -195,7 +195,7 @@ def create_refresh_token(user_id, role):
         Item={
             "tokenId": "REFRESH#" + sha256_hex(raw_token),
             "tokenType": "REFRESH",
-            "userId": str(user_id),
+            "profileId": str(user_id),
             "role": role,
             "createdAt": now,
             "expiresAt": expiry,
@@ -232,107 +232,112 @@ def register(event, role=None):
     except ValueError as exc:
         return response(400, {"message": str(exc)})
 
-    # POST /auth/register sends the role in the body ("PATIENT" or "DOCTOR").
-    # The older role-specific routes pass the role in directly.
-    if role is None:
-        role = str(data.get("role") or "").strip().lower()
-    if role not in ("patient", "doctor"):
-        return response(400, {"message": "role must be PATIENT or DOCTOR"})
+    role = (role or str(data.get("role") or "")).strip().lower()
+    if role not in {"doctor", "patient"}:
+        return response(400, {"message": "role must be DOCTOR or PATIENT"})
+
     email = data.get("email")
     password = data.get("password")
     first_name = data.get("first_name", data.get("firstName"))
     last_name = data.get("last_name", data.get("lastName", ""))
-    if not isinstance(email, str) or not email.strip() or len(email) > 255:
+
+    if not isinstance(email, str) or not email.strip() or len(email.strip()) > 255:
         return response(400, {"message": "A valid email is required"})
     email = email.strip().lower()
-    if not isinstance(first_name, str) or not first_name.strip() or len(first_name) > 100:
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        return response(400, {"message": "Email format is invalid"})
+    if not isinstance(first_name, str) or not first_name.strip() or len(first_name.strip()) > 100:
         return response(400, {"message": "first_name is required (max 100 characters)"})
     if not isinstance(last_name, str) or len(last_name) > 100:
-        return response(400, {"message": "last_name must be at most 100 characters"})
+        return response(400, {"message": "last_name must be a string (max 100 characters)"})
     problem = password_error(password)
     if problem:
         return response(400, {"message": problem})
-    # Validate role-specific fields BEFORE touching the database
-    registration_number = None
-    experience_years = 0
-    consultation_fee = 0
-    gender = None
-    phone = None
-    dob = None
-    if role == "doctor":
-        registration_number = data.get("registration_number")
-        if not isinstance(registration_number, str) or not registration_number.strip():
-            return response(400, {"message": "registration_number is required"})
-        registration_number = registration_number.strip()
-        if len(registration_number) > 100:
-            return response(400, {"message": "registration_number must be at most 100 characters"})
-        try:
-            experience_years = int(data.get("experience_years") or 0)
-            consultation_fee = float(data.get("consultation_fee") or 0)
-        except (TypeError, ValueError):
-            return response(400, {"message": "experience_years and consultation_fee must be numbers"})
-        if experience_years < 0 or consultation_fee < 0:
-            return response(400, {"message": "experience_years and consultation_fee cannot be negative"})
-    else:
-        gender = data.get("gender")
-        allowed_gender = {"male", "female", "other", "prefer_not_to_say", None, ""}
-        if gender not in allowed_gender:
-            return response(400, {"message": "Invalid gender"})
-        dob = data.get("date_of_birth")
-        if dob:
-            try:
-                datetime.strptime(str(dob), "%Y-%m-%d")
-            except ValueError:
-                return response(400, {"message": "date_of_birth must be YYYY-MM-DD"})
-        raw_phone = data.get("phone")
-        phone = str(raw_phone).strip() if raw_phone not in (None, "") else None
-        if phone and len(phone) > 20:
-            return response(400, {"message": "phone must be at most 20 characters"})
-    # user_id, doctor_id, and patient_id are generated by MySQL AUTO_INCREMENT.
+
     password_hash = hash_password(password)
+    first_name = first_name.strip()
+    last_name = last_name.strip() or None
+
     try:
         with connect_db() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO users (email, password_hash, role, status) "
-                    "VALUES (%s, %s, %s, 'active')",
-                    (email, password_hash, role),
-                )
-                user_id = int(cur.lastrowid)
-                if role == "patient":
+                if role == "doctor":
+                    registration_number = data.get("registration_number")
+                    if not isinstance(registration_number, str) or not registration_number.strip():
+                        return response(400, {"message": "registration_number is required"})
+                    registration_number = registration_number.strip()
+                    if len(registration_number) > 100:
+                        return response(400, {"message": "registration_number must be at most 100 characters"})
+                    try:
+                        experience = int(data.get("experience_years") or 0)
+                    except (TypeError, ValueError):
+                        return response(400, {"message": "experience_years must be an integer"})
+                    if not 0 <= experience <= 100:
+                        return response(400, {"message": "experience_years must be between 0 and 100"})
                     cur.execute(
-                        "INSERT INTO patients "
-                        "(user_id, first_name, last_name, phone, date_of_birth, gender) "
-                        "VALUES (%s, %s, %s, %s, %s, %s)",
-                        (user_id, first_name.strip(), last_name.strip() or None,
-                         phone, dob or None, gender or None),
+                        """
+                        INSERT INTO doctors
+                          (registration_number, first_name, last_name, email, password_hash,
+                           qualification, experience_years, profile_status)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING')
+                        """,
+                        (registration_number, first_name, last_name or "", email,
+                         password_hash, data.get("qualification"), experience),
                     )
                     profile_id = int(cur.lastrowid)
+                    hospital_id = data.get("hospital_id")
+                    if hospital_id not in (None, ""):
+                        if not str(hospital_id).isdigit() or int(hospital_id) <= 0:
+                            conn.rollback()
+                            return response(400, {"message": "hospital_id must be a positive integer"})
+                        cur.execute(
+                            "INSERT INTO doctor_hospitals (doctor_id, hospital_id, is_active) VALUES (%s, %s, TRUE)",
+                            (profile_id, int(hospital_id)),
+                        )
+                    account_status = "PENDING"
                 else:
-                    # Doctor registration is active after successful validation.
-                    # hospital_id is no longer collected at registration.
+                    gender = data.get("gender")
+                    if gender not in (None, "", "male", "female", "other", "prefer_not_to_say"):
+                        return response(400, {"message": "Invalid gender"})
+                    dob = data.get("date_of_birth")
+                    if dob:
+                        try:
+                            parsed_dob = datetime.strptime(str(dob), "%Y-%m-%d").date()
+                            if parsed_dob > datetime.utcnow().date():
+                                return response(400, {"message": "date_of_birth cannot be in the future"})
+                        except ValueError:
+                            return response(400, {"message": "date_of_birth must be YYYY-MM-DD"})
+                    phone = data.get("phone")
+                    if phone is not None:
+                        if not isinstance(phone, str) or len(phone.strip()) > 20:
+                            return response(400, {"message": "phone must be a string up to 20 characters"})
+                        phone = phone.strip() or None
                     cur.execute(
-                        "INSERT INTO doctors "
-                        "(user_id, registration_number, first_name, "
-                        "last_name, qualification, experience_years, consultation_fee, profile_status) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE')",
-                        (user_id, registration_number, first_name.strip(),
-                         last_name.strip() or "", data.get("qualification"),
-                         experience_years, consultation_fee),
+                        """
+                        INSERT INTO patients
+                          (first_name, last_name, email, password_hash, date_of_birth, gender, phone)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (first_name, last_name, email, password_hash, dob or None, gender or None, phone),
                     )
                     profile_id = int(cur.lastrowid)
+                    account_status = "ACTIVE"
+
             conn.commit()
+
         return response(201, {
             "message": f"{role.capitalize()} registration successful",
-            "userId": user_id,
             "profileId": profile_id,
-            "status": "active",
+            "role": role,
+            "status": account_status,
         })
     except pymysql.err.IntegrityError as exc:
         code = exc.args[0] if exc.args else None
         logger.info("Registration conflict: %s", exc.args)
         if code == 1062:
             return response(409, {"message": "Email or registration number already exists"})
+        if code == 1452:
+            return response(400, {"message": "Referenced hospital does not exist"})
         return response(400, {"message": "Invalid or conflicting registration data"})
     except Exception:
         logger.exception("Registration failed")
@@ -340,46 +345,56 @@ def register(event, role=None):
 
 
 def login(event):
-    data = parse_body(event)
+    try:
+        data = parse_body(event)
+    except ValueError as exc:
+        return response(400, {"message": str(exc)})
+
     email = data.get("email")
     password = data.get("password")
+    role = str(data.get("role") or "").strip().lower()
     if not isinstance(email, str) or not isinstance(password, str):
         return response(400, {"message": "email and password are required"})
+    if role not in {"doctor", "patient"}:
+        return response(400, {"message": "role must be DOCTOR or PATIENT"})
+
+    table = "doctors" if role == "doctor" else "patients"
+    id_column = "doctor_id" if role == "doctor" else "patient_id"
     try:
         with connect_db() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT user_id, email, password_hash, role, status "
-                    "FROM users WHERE email = %s",
+                    f"SELECT {id_column} AS profile_id, email, password_hash "
+                    f"FROM {table} WHERE email = %s LIMIT 1",
                     (email.strip().lower(),),
                 )
-                user = cur.fetchone()
-        if not user or not verify_password(password, user["password_hash"]):
+                account = cur.fetchone()
+
+        if not account or not verify_password(password, account["password_hash"]):
             return response(401, {"message": "Invalid email or password"})
-        if user["status"] != "active":
-            return response(403, {"message": "Account is not active"})
-        if user["role"] == "doctor":
+
+        profile_id = int(account["profile_id"])
+        if role == "doctor":
             with connect_db() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT profile_status FROM doctors WHERE user_id = %s",
-                        (user["user_id"],),
-                    )
+                    cur.execute("SELECT profile_status FROM doctors WHERE doctor_id = %s", (profile_id,))
                     profile = cur.fetchone()
-            if not profile or str(profile["profile_status"]).lower() != "active":
-                return response(403, {"message": "Doctor profile is awaiting approval or inactive"})
-        access, jti, access_exp = new_access_token(user["user_id"], user["role"])
-        refresh = create_refresh_token(user["user_id"], user["role"])
+            if not profile or str(profile["profile_status"]).upper() != "ACTIVE":
+                return response(403, {"message": "Doctor profile is pending approval or inactive"})
+
+        access, _, _ = new_access_token(profile_id, role)
+        refresh_token = create_refresh_token(profile_id, role)
         return response(200, {
             "accessToken": access,
             "tokenType": "Bearer",
             "expiresIn": ACCESS_TOKEN_MINUTES * 60,
-            "refreshToken": refresh,
+            "refreshToken": refresh_token,
+            "profileId": profile_id,
+            "role": role,
         })
     except Exception:
         logger.exception("Login failed")
         return response(500, {"message": "Internal server error"})
-
 
 def refresh(event):
     """
@@ -411,7 +426,7 @@ def refresh(event):
         # Issue a fresh short-lived access token, while keeping the original
         # refresh token and its original expiresAt unchanged.
         access, jti, access_exp = new_access_token(
-            str(record["userId"]),
+            str(record.get("profileId") or record.get("userId")),
             str(record["role"]),
         )
         return response(200, {
@@ -469,7 +484,7 @@ def logout(event):
             return response(401, {"message": "Invalid or expired refresh token"})
 
         # Access token and refresh token must belong to the same user.
-        refresh_user_id = str(refresh_record.get("userId"))
+        refresh_user_id = str(refresh_record.get("profileId") or refresh_record.get("userId"))
         refresh_role = str(refresh_record.get("role"))
 
         if (
@@ -494,7 +509,7 @@ def logout(event):
             Item={
                 "tokenId": "DENYLIST#" + jti,
                 "tokenType": "DENYLIST",
-                "userId": access_user_id,
+                "profileId": access_user_id,
                 "createdAt": now,
                 "expiresAt": expiry,
                 "revoked": True,
