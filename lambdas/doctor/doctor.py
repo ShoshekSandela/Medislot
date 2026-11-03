@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import uuid
+from datetime import datetime
 
 import boto3
 import pymysql
@@ -429,6 +430,15 @@ def availability(connection, doctor_id, method, data, item_id=None):
                 """,
                 list(updates.values()) + [item_id, doctor_id],
             )
+            affected_rows = cursor.rowcount
+            if affected_rows == 0:
+                cursor.execute(
+                    "SELECT availability_id FROM doctor_availability WHERE availability_id = %s AND doctor_id = %s",
+                    (item_id, doctor_id),
+                )
+                if not cursor.fetchone():
+                    connection.rollback()
+                    return response(404, {"message": "Availability not found"})
             connection.commit()
             return response(200, {"message": "Availability updated"})
 
@@ -440,6 +450,10 @@ def availability(connection, doctor_id, method, data, item_id=None):
                 """,
                 (item_id, doctor_id),
             )
+            deleted_rows = cursor.rowcount
+            if deleted_rows == 0:
+                connection.rollback()
+                return response(404, {"message": "Availability not found"})
             connection.commit()
             return response(200, {"message": "Availability deleted"})
 
@@ -508,6 +522,10 @@ def blackouts(connection, doctor_id, method, data, item_id=None):
                 """,
                 (item_id, doctor_id),
             )
+            deleted_rows = cursor.rowcount
+            if deleted_rows == 0:
+                connection.rollback()
+                return response(404, {"message": "Blackout not found"})
             connection.commit()
             return response(200, {"message": "Blackout deleted"})
 
@@ -521,8 +539,8 @@ def create_photo_upload(connection, doctor_id, data):
     if not bucket:
         return response(500, {"message": "PROFILE_PHOTOS_BUCKET is not configured"})
 
-    filename = str(data.get("fileName") or "").strip()
-    content_type = str(data.get("contentType") or "").strip().lower()
+    filename = str(data.get("fileName") or data.get("file_name") or "").strip()
+    content_type = str(data.get("contentType") or data.get("content_type") or "").strip().lower()
     allowed_types = {"image/jpeg", "image/png", "image/webp"}
     if not filename or content_type not in allowed_types:
         return response(400, {
