@@ -33,6 +33,7 @@ def get_db_connection():
         cursorclass=pymysql.cursors.DictCursor,
         autocommit=False,
         connect_timeout=5,
+        init_command="SET time_zone = '+05:30'",
     )
 
 
@@ -157,7 +158,7 @@ def update_profile(connection, doctor_id, data):
         cursor.execute(
             f"""
             UPDATE doctors
-            SET {columns}, updated_at = UTC_TIMESTAMP(3)
+            SET {columns}, updated_at = CURRENT_TIMESTAMP(3)
             WHERE doctor_id = %s
             """,
             list(updates.values()) + [doctor_id],
@@ -388,14 +389,14 @@ def blackouts(connection, doctor_id, method, data, item_id=None):
                 SELECT *
                 FROM doctor_blackouts
                 WHERE doctor_id = %s
-                ORDER BY start_at_utc
+                ORDER BY start_at_ist
                 """,
                 (doctor_id,),
             )
             return response(200, cursor.fetchall())
 
         if method == "POST":
-            required = ["start_at_utc", "end_at_utc"]
+            required = ["start_at_ist", "end_at_ist"]
             missing = [
                 key for key in required if data.get(key) in (None, "")
             ]
@@ -407,8 +408,8 @@ def blackouts(connection, doctor_id, method, data, item_id=None):
 
             if not data.get("hospital_id"):
                 return response(400, {"message": "hospital_id is required"})
-            if data["end_at_utc"] <= data["start_at_utc"]:
-                return response(400, {"message": "end_at_utc must be later than start_at_utc"})
+            if data["end_at_ist"] <= data["start_at_ist"]:
+                return response(400, {"message": "end_at_ist must be later than start_at_ist"})
             try:
                 hospital_id = int(data["hospital_id"])
             except (TypeError, ValueError):
@@ -422,11 +423,11 @@ def blackouts(connection, doctor_id, method, data, item_id=None):
             cursor.execute(
                 """
                 INSERT INTO doctor_blackouts
-                    (doctor_id, hospital_id, start_at_utc, end_at_utc, reason)
+                    (doctor_id, hospital_id, start_at_ist, end_at_ist, reason)
                 VALUES (%s, %s, %s, %s, %s)
                 """,
-                (doctor_id, hospital_id, data["start_at_utc"],
-                 data["end_at_utc"], data.get("reason")),
+                (doctor_id, hospital_id, data["start_at_ist"],
+                 data["end_at_ist"], data.get("reason")),
             )
             connection.commit()
             return response(201, {

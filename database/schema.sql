@@ -1,7 +1,7 @@
 -- MediSlot schema matching the supplied ER diagram.
 -- No users table. Doctor and patient identities are their own numeric profile IDs.
 -- Use on a NEW/EMPTY database only; existing UUID-based databases need a migration.
--- All availability, blackout, appointment, and generated slot times use UTC.
+-- All hospital, availability, blackout, appointment, and generated slot times use IST (Asia/Kolkata).
 
 CREATE DATABASE IF NOT EXISTS medislot CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE medislot;
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS hospitals (
   state VARCHAR(100) NOT NULL,
   postal_code VARCHAR(20),
   country VARCHAR(100) NOT NULL DEFAULT 'India',
-  timezone VARCHAR(64) NOT NULL DEFAULT 'UTC',
+  timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Kolkata',
   phone VARCHAR(20),
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -107,15 +107,15 @@ CREATE TABLE IF NOT EXISTS doctor_blackouts (
   blackout_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   doctor_id BIGINT UNSIGNED NOT NULL,
   hospital_id BIGINT UNSIGNED NOT NULL,
-  start_at_utc DATETIME NOT NULL,
-  end_at_utc DATETIME NOT NULL,
+  start_at_ist DATETIME NOT NULL,
+  end_at_ist DATETIME NOT NULL,
   reason VARCHAR(255),
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (blackout_id),
-  KEY idx_blackout_doctor_time (doctor_id, start_at_utc, end_at_utc),
+  KEY idx_blackout_doctor_time (doctor_id, start_at_ist, end_at_ist),
   CONSTRAINT fk_blackout_doctor FOREIGN KEY (doctor_id) REFERENCES doctors(doctor_id),
   CONSTRAINT fk_blackout_hospital FOREIGN KEY (hospital_id) REFERENCES hospitals(hospital_id),
-  CONSTRAINT chk_blackout_range CHECK (end_at_utc > start_at_utc)
+  CONSTRAINT chk_blackout_range CHECK (end_at_ist > start_at_ist)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS doctor_availability (
@@ -123,10 +123,10 @@ CREATE TABLE IF NOT EXISTS doctor_availability (
   doctor_id BIGINT UNSIGNED NOT NULL,
   hospital_id BIGINT UNSIGNED NOT NULL,
   consultation_type_id BIGINT UNSIGNED NOT NULL,
-  day_of_week TINYINT UNSIGNED NOT NULL COMMENT '0=Sunday, 1=Monday, ..., 6=Saturday; availability times are UTC',
+  day_of_week TINYINT UNSIGNED NOT NULL COMMENT '0=Sunday, 1=Monday, ..., 6=Saturday; availability times are IST (Asia/Kolkata)',
   start_time TIME NOT NULL,
   end_time TIME NOT NULL,
-  timezone VARCHAR(64) NOT NULL DEFAULT 'UTC',
+  timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Kolkata',
   effective_from DATE NOT NULL,
   effective_until DATE,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -149,23 +149,23 @@ CREATE TABLE IF NOT EXISTS appointments (
   hospital_id BIGINT UNSIGNED NOT NULL,
   consultation_type_id BIGINT UNSIGNED NOT NULL,
   slot_id VARCHAR(128) NOT NULL,
-  start_at_utc DATETIME NOT NULL,
-  end_at_utc DATETIME NOT NULL,
-  timezone VARCHAR(64) NOT NULL DEFAULT 'UTC',
+  start_at_ist DATETIME NOT NULL,
+  end_at_ist DATETIME NOT NULL,
+  timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Kolkata',
   status ENUM('BOOKED','CANCELLED','RESCHEDULED','COMPLETED') NOT NULL DEFAULT 'BOOKED',
   reschedule_count TINYINT UNSIGNED NOT NULL DEFAULT 0,
-  cancelled_at_utc DATETIME,
+  cancelled_at_ist DATETIME,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (appointment_id),
-  KEY idx_appointment_patient_start (patient_id, start_at_utc),
-  KEY idx_appointment_doctor_start (doctor_id, start_at_utc),
+  KEY idx_appointment_patient_start (patient_id, start_at_ist),
+  KEY idx_appointment_doctor_start (doctor_id, start_at_ist),
   KEY idx_appointment_slot (slot_id),
   CONSTRAINT fk_appointment_patient FOREIGN KEY (patient_id) REFERENCES patients(patient_id),
   CONSTRAINT fk_appointment_doctor FOREIGN KEY (doctor_id) REFERENCES doctors(doctor_id),
   CONSTRAINT fk_appointment_hospital FOREIGN KEY (hospital_id) REFERENCES hospitals(hospital_id),
   CONSTRAINT fk_appointment_consultation FOREIGN KEY (consultation_type_id) REFERENCES consultation_types(consultation_type_id),
-  CONSTRAINT chk_appointment_time CHECK (end_at_utc > start_at_utc)
+  CONSTRAINT chk_appointment_time CHECK (end_at_ist > start_at_ist)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS refund_ledger (

@@ -7,6 +7,7 @@ from datetime import datetime
 
 import boto3
 import pymysql
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -28,6 +29,7 @@ def connect_db():
         database=os.environ.get("DB_NAME", "medislot"),
         cursorclass=pymysql.cursors.DictCursor,
         connect_timeout=5,
+        init_command="SET time_zone = '+05:30'",
         read_timeout=10,
         write_timeout=10,
         autocommit=False
@@ -291,7 +293,7 @@ def lambda_handler(event, context):
                                 "%Y-%m-%d"
                             ).date()
 
-                            if parsed_dob > datetime.utcnow().date():
+                            if parsed_dob > datetime.now(ZoneInfo('Asia/Kolkata')).date():
                                 return response(400, {
                                     "message": "Date of birth cannot be in the future"
                                 })
@@ -313,7 +315,7 @@ def lambda_handler(event, context):
                     f"""
                     UPDATE patients
                     SET {columns},
-                        updated_at = UTC_TIMESTAMP()
+                        updated_at = CURRENT_TIMESTAMP()
                     WHERE patient_id = %s
                     """,
                     values

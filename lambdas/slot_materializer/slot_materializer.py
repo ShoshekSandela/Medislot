@@ -1,13 +1,13 @@
 """MediSlot slot materialiser.
 
-Availability start_time/end_time are interpreted as UTC. No local timezone or
-DST conversion is performed. Day-of-week follows the database convention:
-0=Sunday, 1=Monday, ..., 6=Saturday.
+Availability, blackout and generated slot times use IST (Asia/Kolkata).
+Day-of-week follows the database convention: 0=Sunday, 1=Monday, ..., 6=Saturday.
 """
 
 import json
 import os
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import boto3
 import pymysql
@@ -16,7 +16,7 @@ from botocore.exceptions import ClientError
 
 secrets_client = boto3.client("secretsmanager")
 dynamodb = boto3.resource("dynamodb")
-UTC = timezone.utc
+IST = ZoneInfo('Asia/Kolkata')
 
 
 def get_db_connection():
@@ -34,16 +34,17 @@ def get_db_connection():
         database=db_name,
         cursorclass=pymysql.cursors.DictCursor,
         autocommit=True,
+        init_command="SET time_zone = '+05:30'",
     )
 
 
 def get_date_range(event):
-    """Return the requested UTC date range (default rolling 30 days)."""
+    """Return the requested IST date range (default rolling 30 days)."""
     start_date_value = event.get("start_date")
     start_day = (
         date.fromisoformat(start_date_value)
         if start_date_value
-        else datetime.now(UTC).date()
+        else datetime.now(IST).date()
     )
 
     days = int(event.get("days", os.environ.get("SLOT_WINDOW_DAYS", "30")))
@@ -66,7 +67,7 @@ def mysql_time_to_time(value):
     if isinstance(value, timedelta):
         total_seconds = int(value.total_seconds())
         if total_seconds < 0 or total_seconds >= 24 * 60 * 60:
-            raise ValueError("Availability time must be within one UTC day")
+            raise ValueError("Availability time must be within one IST day")
         hours, remainder = divmod(total_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
         return time(hours, minutes, seconds)
@@ -105,15 +106,15 @@ def get_availability(connection, day_of_week, target_date):
         return cursor.fetchall()
 
 
-def is_blackout(connection, doctor_id, hospital_id, start_utc, end_utc):
-    """Return True when a UTC blackout overlaps the proposed slot."""
+def is_blackout(connection, doctor_id, hospital_id, start_ist, end_ist):
+    """Return True when an IST blackout overlaps the proposed slot."""
     sql = """
         SELECT blackout_id
         FROM doctor_blackouts
         WHERE doctor_id = %s
           AND hospital_id = %s
-          AND start_at_utc < %s
-          AND end_at_utc > %s
+          AND start_at_ist < %s
+          AND end_at_ist > %s
         LIMIT 1
     """
 
@@ -123,20 +124,20 @@ def is_blackout(connection, doctor_id, hospital_id, start_utc, end_utc):
             (
                 doctor_id,
                 hospital_id,
-                end_utc.replace(tzinfo=None),
-                start_utc.replace(tzinfo=None),
+                end_ist.replace(tzinfo=None),
+                start_ist.replace(tzinfo=None),
             ),
         )
         return cursor.fetchone() is not None
 
 
-def create_slot(slots_table, availability, start_utc, end_utc, connection):
+def create_slot(slots_table, availability, start_ist, end_ist, connection):
     if is_blackout(
         connection,
         availability["doctor_id"],
         availability["hospital_id"],
-        start_utc,
-        end_utc,
+        start_ist,
+        end_ist,
     ):
         return "blackout"
 
@@ -145,7 +146,7 @@ def create_slot(slots_table, availability, start_utc, end_utc, connection):
         f"{availability['doctor_id']}#"
         f"{availability['hospital_id']}#"
         f"{availability['consultation_type_id']}#"
-        f"{start_utc.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+        f"{start_ist.isoformat(timespec='seconds')}"
     )
 
     item = {
@@ -153,11 +154,11 @@ def create_slot(slots_table, availability, start_utc, end_utc, connection):
         "doctorId": int(availability["doctor_id"]),
         "hospitalId": int(availability["hospital_id"]),
         "consultationTypeId": int(availability["consultation_type_id"]),
-        "slotTime": start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "endTime": end_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "slotTime": start_ist.isoformat(timespec="seconds"),
+        "endTime": end_ist.isoformat(timespec="seconds"),
         "status": "AVAILABLE",
         "version": 1,
-        "timezone": "UTC",
+        "timezone": "Asia/Kolkata",
     }
 
     try:
@@ -194,9 +195,9 @@ def materialize_day(connection, slots_table, target_date):
         if end_time <= start_time:
             raise ValueError("Availability end_time must be later than start_time")
 
-        # Availability values are already UTC. No timezone conversion or DST.
-        window_start = datetime.combine(target_date, start_time, tzinfo=UTC)
-        window_end = datetime.combine(target_date, end_time, tzinfo=UTC)
+        # Availability values are IST local wall-clock times; India does not observe DST.
+        window_start = datetime.combine(target_date, start_time, tzinfo=IST)
+        window_end = datetime.combine(target_date, end_time, tzinfo=IST)
         current_start = window_start
         consultation_duration = timedelta(minutes=duration_minutes)
         buffer_duration = timedelta(minutes=buffer_minutes)
@@ -249,10 +250,10 @@ def lambda_handler(event, context):
             "statusCode": 200,
             "body": json.dumps(
                 {
-                    "message": "UTC slot materialisation completed",
+                    "message": "IST slot materialisation completed",
                     "start_date": str(start_day),
                     "days": days,
-                    "timezone": "UTC",
+                    "timezone": "Asia/Kolkata",
                     "results": total_results,
                 }
             ),
