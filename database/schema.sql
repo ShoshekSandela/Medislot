@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS hospitals (
 
 CREATE TABLE IF NOT EXISTS consultation_types (
   consultation_type_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  doctor_id BIGINT UNSIGNED NULL,
   type_name VARCHAR(100) NOT NULL,
   duration_minutes SMALLINT UNSIGNED NOT NULL,
   capacity SMALLINT UNSIGNED NOT NULL DEFAULT 1,
@@ -63,7 +64,9 @@ CREATE TABLE IF NOT EXISTS consultation_types (
   consultation_fee DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (consultation_type_id),
-  UNIQUE KEY uq_consultation_type_name (type_name)
+  UNIQUE KEY uq_consultation_type_doctor_name (doctor_id, type_name),
+  CONSTRAINT fk_consultation_type_doctor
+    FOREIGN KEY (doctor_id) REFERENCES doctors(doctor_id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS patients (

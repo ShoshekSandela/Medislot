@@ -1,9 +1,11 @@
 import json
 import logging
 import os
+import uuid
 
 import boto3
 import pymysql
+from boto3.dynamodb.conditions import Attr
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -262,7 +264,7 @@ def availability(connection, doctor_id, method, data, item_id=None):
             )
             return response(200, cursor.fetchall())
 
-        if method == "POST":
+        if method in {"POST", "PUT"} and item_id is None:
             required = [
                 "hospital_id",
                 "consultation_type_id",
@@ -452,7 +454,7 @@ def create_photo_upload(connection, doctor_id, data):
     }[content_type]
     safe_stem = os.path.splitext(os.path.basename(filename))[0]
     safe_stem = "".join(ch for ch in safe_stem if ch.isalnum() or ch in "-_")[:60] or "profile"
-    object_key = f"doctors/{doctor_id}/profile/{safe_stem}{extension}"
+    object_key = f"doctors/{doctor_id}/profile/{uuid.uuid4().hex}{extension}"
 
     try:
         upload_url = s3_client.generate_presigned_url(
@@ -491,7 +493,7 @@ def create_photo_upload(connection, doctor_id, data):
     })
 
 
-def doctor_schedule(doctor_id, query_params):
+def doctor_schedule(connection, doctor_id, query_params):
     """Return this doctor's generated slots for one IST calendar date."""
     date_value = (query_params or {}).get("date")
     if not date_value:
@@ -507,29 +509,47 @@ def doctor_schedule(doctor_id, query_params):
 
     try:
         table = dynamodb.Table(table_name)
-        result = table.scan(
-            FilterExpression="doctorId = :doctor_id AND begins_with(slotTime, :day)",
-            ExpressionAttributeValues={
-                ":doctor_id": int(doctor_id),
-                ":day": target_date.isoformat(),
-            },
+        filter_expression = (
+            Attr("doctorId").eq(int(doctor_id))
+            & Attr("slotTime").begins_with(target_date.isoformat())
         )
+        result = table.scan(FilterExpression=filter_expression)
         slots = result.get("Items", [])
         while result.get("LastEvaluatedKey"):
             result = table.scan(
-                FilterExpression="doctorId = :doctor_id AND begins_with(slotTime, :day)",
-                ExpressionAttributeValues={
-                    ":doctor_id": int(doctor_id),
-                    ":day": target_date.isoformat(),
-                },
+                FilterExpression=filter_expression,
                 ExclusiveStartKey=result["LastEvaluatedKey"],
             )
             slots.extend(result.get("Items", []))
         slots.sort(key=lambda item: item.get("slotTime", ""))
+
+        # RDS is the system of record for booked appointments and patient details.
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    a.appointment_id, a.slot_id, a.patient_id,
+                    p.first_name AS patient_first_name,
+                    p.last_name AS patient_last_name,
+                    p.phone AS patient_phone,
+                    a.hospital_id, a.consultation_type_id,
+                    a.start_at_ist, a.end_at_ist, a.status
+                FROM appointments a
+                JOIN patients p ON p.patient_id = a.patient_id
+                WHERE a.doctor_id = %s
+                  AND DATE(a.start_at_ist) = %s
+                  AND a.status = 'BOOKED'
+                ORDER BY a.start_at_ist
+                """,
+                (int(doctor_id), target_date),
+            )
+            appointments = cursor.fetchall()
+
         return response(200, {
             "date": target_date.isoformat(),
             "timezone": "Asia/Kolkata",
             "slots": slots,
+            "appointments": appointments,
         })
     except Exception:
         logger.exception("Doctor schedule lookup failed")
@@ -598,8 +618,16 @@ def lambda_handler(event, context):
                     else response(404, {"message": "Profile not found"})
                 )
 
-            if request_path == "/doctors" and method == "PUT":
+            if request_path in {"/doctors/me", "/doctors"} and method == "PUT":
                 return update_profile(connection, doctor_id, data)
+
+            if request_path == "/doctors/me/photo" and method == "POST":
+                return create_photo_upload(connection, doctor_id, data)
+
+            if request_path == "/doctors/me/schedule" and method == "GET":
+                return doctor_schedule(
+                    connection, doctor_id, event.get("queryStringParameters") or {}
+                )
 
             if len(parts) >= 2 and parts[0] == "doctors":
                 resource_parts = parts[1:]
