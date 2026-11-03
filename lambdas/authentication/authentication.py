@@ -452,6 +452,139 @@ def login(event):
         logger.exception("Login failed")
         return response(500, {"message": "Internal server error"})
 
+def refresh_session(event):
+    """
+    Validate the existing refresh token and issue a new access token.
+    The refresh token itself is NOT rotated; it remains valid until its
+    original seven-day expiresAt time or until logout/revocation.
+    """
+    try:
+        data = parse_body(event)
+    except ValueError as exc:
+        return response(400, {"message": str(exc)})
+
+    refresh_token = data.get("refreshToken")
+    if not isinstance(refresh_token, str) or not refresh_token.strip():
+        return response(400, {"message": "refreshToken is required"})
+
+    refresh_token = refresh_token.strip()
+    token_id = "REFRESH#" + sha256_hex(refresh_token)
+
+    try:
+        result = token_table.get_item(
+            Key={"tokenId": token_id},
+            ConsistentRead=True
+        )
+        item = result.get("Item")
+
+        if not item or item.get("tokenType") != "REFRESH":
+            return response(401, {"message": "Invalid refresh token"})
+
+        now = int(time.time())
+        expires_at = int(item.get("expiresAt", 0))
+
+        if item.get("revoked") is True or expires_at <= now:
+            return response(401, {"message": "Refresh token is expired or revoked"})
+
+        profile_id = item.get("profileId")
+        role = str(item.get("role", "")).strip().lower()
+
+        if not profile_id or role not in {"patient", "doctor"}:
+            logger.error("Refresh token has invalid profile or role")
+            return response(401, {"message": "Invalid refresh token"})
+
+        # Confirm that the account still exists and that a doctor is still active.
+        with connect_db() as conn:
+            with conn.cursor() as cur:
+                if role == "patient":
+                    cur.execute(
+                        "SELECT patient_id FROM patients WHERE patient_id = %s LIMIT 1",
+                        (int(profile_id),)
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT doctor_id, profile_status
+                        FROM doctors
+                        WHERE doctor_id = %s
+                        LIMIT 1
+                        """,
+                        (int(profile_id),)
+                    )
+
+                account = cur.fetchone()
+
+        if not account:
+            return response(401, {"message": "Account no longer exists"})
+
+        if role == "doctor" and str(account.get("profile_status", "")).upper() != "ACTIVE":
+            return response(403, {"message": "Doctor profile is pending approval or inactive"})
+
+        access_token, _, _ = new_access_token(int(profile_id), role)
+
+        return response(200, {
+            "message": "Access token refreshed successfully",
+            "accessToken": access_token,
+            "tokenType": "Bearer",
+            "expiresIn": ACCESS_TOKEN_MINUTES * 60,
+            "refreshToken": refresh_token,
+            "profileId": int(profile_id),
+            "role": role,
+            "refreshTokenExpiresAt": expires_at
+        })
+
+    except Exception:
+        logger.exception("Refresh token validation failed")
+        return response(500, {"message": "Internal server error"})
+
+
+def logout(event):
+    """
+    Revoke the supplied refresh token. Logout is idempotent for a token
+    that is already revoked, but rejects an unknown token.
+    """
+    try:
+        data = parse_body(event)
+    except ValueError as exc:
+        return response(400, {"message": str(exc)})
+
+    refresh_token = data.get("refreshToken")
+    if not isinstance(refresh_token, str) or not refresh_token.strip():
+        return response(400, {"message": "refreshToken is required"})
+
+    token_id = "REFRESH#" + sha256_hex(refresh_token.strip())
+
+    try:
+        result = token_table.get_item(
+            Key={"tokenId": token_id},
+            ConsistentRead=True
+        )
+        item = result.get("Item")
+
+        if not item or item.get("tokenType") != "REFRESH":
+            return response(401, {"message": "Invalid refresh token"})
+
+        if item.get("revoked") is True:
+            return response(200, {"message": "Logout successful"})
+
+        token_table.update_item(
+            Key={"tokenId": token_id},
+            UpdateExpression="SET revoked = :revoked, revokedAt = :revoked_at",
+            ConditionExpression="attribute_exists(tokenId) AND tokenType = :token_type",
+            ExpressionAttributeValues={
+                ":revoked": True,
+                ":revoked_at": int(time.time()),
+                ":token_type": "REFRESH"
+            }
+        )
+
+        return response(200, {"message": "Logout successful"})
+
+    except Exception:
+        logger.exception("Logout failed")
+        return response(500, {"message": "Internal server error"})
+
+
 def lambda_handler(event, context):
     """API Gateway entry point for MediSlot authentication."""
     try:
@@ -464,8 +597,8 @@ def lambda_handler(event, context):
             or ""
         ).upper()
 
-        # Do not use event["resource"] first: REST API proxy resources
-        # often contain the template /auth/{proxy+}, not the real path.
+        # For REST API proxy resources, event["resource"] can be the
+        # template /auth/{proxy+}; use the actual request path instead.
         path = (
             event.get("path")
             or event.get("rawPath")
@@ -474,7 +607,7 @@ def lambda_handler(event, context):
         )
         path = str(path).split("?", 1)[0].rstrip("/").lower()
 
-        # Recover the route from API Gateway's proxy path parameter if needed.
+        # Recover the actual route from pathParameters when necessary.
         if not path or "{proxy+}" in path or path.endswith("/{proxy}"):
             path_parameters = event.get("pathParameters") or {}
             proxy_value = path_parameters.get("proxy")
@@ -483,7 +616,7 @@ def lambda_handler(event, context):
             elif not path:
                 path = str(event.get("resource") or "").split("?", 1)[0].rstrip("/").lower()
 
-        # Remove stage prefix such as /dev from /dev/auth/login.
+        # Remove API Gateway stage prefix, e.g. /dev/auth/refresh.
         stage = str(request_context.get("stage") or "").strip("/").lower()
         if stage and (path == "/" + stage or path.startswith("/" + stage + "/")):
             path = path[len(stage) + 1:]
@@ -515,6 +648,12 @@ def lambda_handler(event, context):
 
         if method == "POST" and path == "/auth/login":
             return login(event)
+
+        if method == "POST" and path == "/auth/refresh":
+            return refresh_session(event)
+
+        if method == "POST" and path == "/auth/logout":
+            return logout(event)
 
         if method == "POST" and path == "/auth/init-db":
             return initialize_database(event)
