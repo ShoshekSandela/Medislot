@@ -352,233 +352,97 @@ def login(event):
 
     email = data.get("email")
     password = data.get("password")
-    role = str(data.get("role") or "").strip().lower()
-    if not isinstance(email, str) or not isinstance(password, str):
-        return response(400, {"message": "email and password are required"})
-    if role not in {"doctor", "patient"}:
-        return response(400, {"message": "role must be DOCTOR or PATIENT"})
 
-    table = "doctors" if role == "doctor" else "patients"
-    id_column = "doctor_id" if role == "doctor" else "patient_id"
+    if not isinstance(email, str) or not email.strip():
+        return response(400, {"message": "Valid email is required"})
+
+    if not isinstance(password, str) or not password:
+        return response(400, {"message": "Password is required"})
+
+    email = email.strip().lower()
+
     try:
         with connect_db() as conn:
             with conn.cursor() as cur:
+
+                # Find the account in the patients table.
                 cur.execute(
-                    f"SELECT {id_column} AS profile_id, email, password_hash "
-                    f"FROM {table} WHERE email = %s LIMIT 1",
-                    (email.strip().lower(),),
+                    """
+                    SELECT patient_id AS profile_id,
+                           email,
+                           password_hash
+                    FROM patients
+                    WHERE email = %s
+                    LIMIT 1
+                    """,
+                    (email,)
                 )
-                account = cur.fetchone()
+                patient = cur.fetchone()
 
-        if not account or not verify_password(password, account["password_hash"]):
-            return response(401, {"message": "Invalid email or password"})
+                # Find the account in the doctors table.
+                cur.execute(
+                    """
+                    SELECT doctor_id AS profile_id,
+                           email,
+                           password_hash,
+                           profile_status
+                    FROM doctors
+                    WHERE email = %s
+                    LIMIT 1
+                    """,
+                    (email,)
+                )
+                doctor = cur.fetchone()
 
-        profile_id = int(account["profile_id"])
-        if role == "doctor":
-            with connect_db() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT profile_status FROM doctors WHERE doctor_id = %s", (profile_id,))
-                    profile = cur.fetchone()
-            if not profile or str(profile["profile_status"]).upper() != "ACTIVE":
-                return response(403, {"message": "Doctor profile is pending approval or inactive"})
-
-        access, _, _ = new_access_token(profile_id, role)
-        refresh_token = create_refresh_token(profile_id, role)
-        return response(200, {
-            "accessToken": access,
-            "tokenType": "Bearer",
-            "expiresIn": ACCESS_TOKEN_MINUTES * 60,
-            "refreshToken": refresh_token,
-            "profileId": profile_id,
-            "role": role,
-        })
-    except Exception:
-        logger.exception("Login failed")
-        return response(500, {"message": "Internal server error"})
-
-def refresh(event):
-    """
-    Validate the existing refresh token and issue a new access token.
-    Refresh tokens are stable for their original 7-day lifetime:
-    - Do not revoke or rotate the refresh token during refresh.
-    - Do not update expiresAt during refresh.
-    - Return the exact same refresh token supplied by the client.
-    """
-    data = parse_body(event)
-    raw = data.get("refreshToken")
-    if not isinstance(raw, str) or not raw:
-        return response(400, {"message": "refreshToken is required"})
-    token_id = "REFRESH#" + sha256_hex(raw)
-    now = int(time.time())
-    try:
-        result = token_table.get_item(
-            Key={"tokenId": token_id},
-            ConsistentRead=True,
-        )
-        record = result.get("Item")
-        if (
-            not record
-            or record.get("tokenType") != "REFRESH"
-            or record.get("revoked") is True
-            or int(record.get("expiresAt", 0)) <= now
-        ):
-            return response(401, {"message": "Invalid or expired refresh token"})
-        # Issue a fresh short-lived access token, while keeping the original
-        # refresh token and its original expiresAt unchanged.
-        access, jti, access_exp = new_access_token(
-            str(record.get("profileId") or record.get("userId")),
-            str(record["role"]),
-        )
-        return response(200, {
-            "accessToken": access,
-            "tokenType": "Bearer",
-            "expiresIn": ACCESS_TOKEN_MINUTES * 60,
-            "refreshToken": raw,
-            "refreshTokenExpiresAt": int(record["expiresAt"]),
-        })
-    except ClientError:
-        logger.exception("Refresh token lookup failed")
-        return response(500, {"message": "Internal server error"})
-    except Exception:
-        logger.exception("Refresh failed")
-        return response(500, {"message": "Internal server error"})
-
-
-def logout(event):
-    token = bearer_token(event)
-
-    if not token:
-        return response(401, {"message": "Bearer access token is required"})
-
-    try:
-        # Validate the access token first.
-        claims = decode_access_token(token)
-
-        access_user_id = str(claims["sub"])
-        access_role = str(claims["role"])
-        now = int(time.time())
-
-        # Read and validate the refresh token supplied for logout.
-        data = parse_body(event)
-        refresh_raw = data.get("refreshToken")
-
-        if not isinstance(refresh_raw, str) or not refresh_raw:
-            return response(400, {"message": "refreshToken is required"})
-
-        refresh_id = "REFRESH#" + sha256_hex(refresh_raw)
-
-        # Read the refresh-token record before revoking anything.
-        result = token_table.get_item(
-            Key={"tokenId": refresh_id},
-            ConsistentRead=True,
-        )
-
-        refresh_record = result.get("Item")
-
-        if (
-            not refresh_record
-            or refresh_record.get("tokenType") != "REFRESH"
-            or refresh_record.get("revoked") is True
-            or int(refresh_record.get("expiresAt", 0)) <= now
-        ):
-            return response(401, {"message": "Invalid or expired refresh token"})
-
-        # Access token and refresh token must belong to the same user.
-        refresh_user_id = str(refresh_record.get("profileId") or refresh_record.get("userId"))
-        refresh_role = str(refresh_record.get("role"))
-
-        if (
-            access_user_id != refresh_user_id
-            or access_role != refresh_role
-        ):
+        # An email must belong to only one account type.
+        if patient and doctor:
             return response(
-                401,
-                {
-                    "message": (
-                        "Access token and refresh token do not belong "
-                        "to the same user"
-                    )
-                },
+                409,
+                {"message": "Email exists in both patient and doctor accounts"}
             )
 
-        # Revoke the access token only after ownership validation succeeds.
-        jti = claims["jti"]
-        expiry = int(claims["exp"])
+        if not patient and not doctor:
+            return response(401, {"message": "Invalid email or password"})
 
-        token_table.put_item(
-            Item={
-                "tokenId": "DENYLIST#" + jti,
-                "tokenType": "DENYLIST",
-                "profileId": access_user_id,
-                "createdAt": now,
-                "expiresAt": expiry,
-                "revoked": True,
-            },
+        if patient:
+            account = patient
+            role = "patient"
+        else:
+            account = doctor
+            role = "doctor"
+
+        # Verify the password.
+        if not verify_password(password, account["password_hash"]):
+            return response(401, {"message": "Invalid email or password"})
+
+        # Doctors must be approved before login.
+        if role == "doctor":
+            if str(account["profile_status"]).upper() != "ACTIVE":
+                return response(
+                    403,
+                    {"message": "Doctor profile is pending approval or inactive"}
+                )
+
+        # Use the numeric patient_id or doctor_id.
+        profile_id = int(account["profile_id"])
+
+        # Generate access and refresh tokens.
+        access_token, _, _ = new_access_token(profile_id, role)
+        refresh_token = create_refresh_token(profile_id, role)
+
+        return response(
+            200,
+            {
+                "message": "Login successful",
+                "accessToken": access_token,
+                "tokenType": "Bearer",
+                "expiresIn": ACCESS_TOKEN_MINUTES * 60,
+                "refreshToken": refresh_token,
+                "profileId": profile_id,
+                "role": role
+            }
         )
 
-        # Revoke the matching refresh token.
-        token_table.update_item(
-            Key={"tokenId": refresh_id},
-            UpdateExpression="SET revoked = :true, revokedAt = :now",
-            ConditionExpression="attribute_exists(tokenId)",
-            ExpressionAttributeValues={
-                ":true": True,
-                ":now": now,
-            },
-        )
-
-        return response(200, {"message": "Logged out"})
-
-    except jwt.ExpiredSignatureError:
-        return response(401, {"message": "Access token has expired"})
-
-    except jwt.InvalidTokenError:
-        return response(401, {"message": "Invalid access token"})
-
-    except ClientError:
-        logger.exception("Logout token operation failed")
-        return response(500, {"message": "Internal server error"})
-
     except Exception:
-        logger.exception("Logout failed")
-        return response(500, {"message": "Internal server error"})
-
-
-
-def lambda_handler(event, context):
-    path = (event.get("path") or event.get("rawPath") or "").rstrip("/")
-    method = (
-        event.get("httpMethod")
-        or event.get("requestContext", {}).get("http", {}).get("method", "")
-    ).upper()
-
-    # API Gateway REST API Lambda proxy events include the full path, without the stage.
-    routes = {
-        ("/auth/initialize-database", "POST"): lambda: initialize_database(event),
-        # Preferred: one endpoint, role ("PATIENT" / "DOCTOR") is sent in the body.
-        ("/auth/register", "POST"): lambda: register(event),
-        # Older role-specific routes, kept so existing clients keep working.
-        ("/auth/patients/register", "POST"): lambda: register(event, "patient"),
-        ("/auth/patient/register", "POST"): lambda: register(event, "patient"),
-        ("/auth/register/patient", "POST"): lambda: register(event, "patient"),
-        ("/auth/doctors/register", "POST"): lambda: register(event, "doctor"),
-        ("/auth/doctor/register", "POST"): lambda: register(event, "doctor"),
-        ("/auth/register/doctor", "POST"): lambda: register(event, "doctor"),
-        ("/auth/login", "POST"): lambda: login(event),
-        ("/auth/refresh", "POST"): lambda: refresh(event),
-        ("/auth/logout", "POST"): lambda: logout(event),
-    }
-
-    handler = routes.get((path, method))
-    if not handler:
-        return response(404, {"message": "Route not found"})
-
-    # Never let an exception escape: an unhandled error makes API Gateway
-    # return a bare 502 instead of a readable response.
-    try:
-        return handler()
-    except ValueError as exc:
-        return response(400, {"message": str(exc)})
-    except Exception:
-        logger.exception("Unhandled error on %s %s", method, path)
+        logger.exception("Login failed")
         return response(500, {"message": "Internal server error"})
