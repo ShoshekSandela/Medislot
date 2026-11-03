@@ -115,7 +115,6 @@ def get_availability(connection, day_of_week, target_date):
         WHERE da.day_of_week = %s
           AND da.is_active = TRUE
           AND ct.is_active = TRUE
-          AND (ct.doctor_id = da.doctor_id OR ct.doctor_id IS NULL)
           AND da.effective_from <= %s
           AND (
               da.effective_until IS NULL
