@@ -479,3 +479,7 @@ Outputs:
   ApplicationFilesBucketName:
     Description: Private S3 application files bucket name
     Value: !Ref ApplicationFilesBucket
+
+  ApplicationFilesBucketArn:
+    Description: Private S3 application files bucket ARN
+    Value: !GetAtt ApplicationFilesBucket.Arn

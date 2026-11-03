@@ -45,6 +45,10 @@ Parameters:
   SlotsTableName:
     Type: String
 
+  ProfilePhotosBucketName:
+    Type: String
+    Description: Existing private S3 bucket name from the data stack
+
   DatabaseSecretArn:
     Type: String
 
@@ -157,6 +161,8 @@ Resources:
           DB_SECRET_ARN: !Ref DatabaseSecretArn
           DB_HOST: !Ref DatabaseHost
           DB_NAME: !Ref DatabaseName
+          PROFILE_PHOTOS_BUCKET: !Ref ProfilePhotosBucketName
+          SLOTS_TABLE_NAME: !Ref SlotsTableName
       Tags:
         - Key: Project
           Value: MediSlot
@@ -226,23 +232,40 @@ Resources:
           SLOT_WINDOW_DAYS: '30'
           SLOT_BUFFER_MINUTES: '15'
 
+  SlotMaterializerSchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-slot-scheduler-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeSlotMaterializer
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt SlotMaterializerLambda.Arn
+
   SlotMaterializerSchedule:
-    Type: AWS::Events::Rule
+    Type: AWS::Scheduler::Schedule
     Properties:
       Name: !Sub medislot-${Environment}-slot-materializer-daily
-      ScheduleExpression: rate(1 day)
+      Description: Generate MediSlot availability slots daily using IST dates
       State: ENABLED
-      Targets:
-        - Arn: !GetAtt SlotMaterializerLambda.Arn
-          Id: SlotMaterializerTarget
-
-  AllowEventBridgeInvokeSlotMaterializer:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref SlotMaterializerLambda
-      Action: lambda:InvokeFunction
-      Principal: events.amazonaws.com
-      SourceArn: !GetAtt SlotMaterializerSchedule.Arn
+      ScheduleExpression: rate(1 day)
+      ScheduleExpressionTimezone: Asia/Kolkata
+      FlexibleTimeWindow:
+        Mode: OFF
+      Target:
+        Arn: !GetAtt SlotMaterializerLambda.Arn
+        RoleArn: !GetAtt SlotMaterializerSchedulerRole.Arn
+        Input: '{"days":30}'
 
   # =========================================================
   # API GATEWAY REST API

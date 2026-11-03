@@ -11,6 +11,10 @@ Parameters:
       - prod
     Description: Deployment environment name
 
+  ProfilePhotosBucketArn:
+    Type: String
+    Description: ARN of the private S3 bucket used for doctor profile photos
+
 Resources:
 
   # 1. Lambda Authorizer
@@ -129,6 +133,11 @@ Resources:
                   - secretsmanager:GetSecretValue
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:rds!*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource:
+                  - !Sub '${ProfilePhotosBucketArn}/doctors/*'
 
   # 4. Patient Lambda execution role
   PatientLambdaRole:

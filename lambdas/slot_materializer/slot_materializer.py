@@ -87,10 +87,13 @@ def get_availability(connection, day_of_week, target_date):
             da.consultation_type_id,
             da.start_time,
             da.end_time,
-            ct.duration_minutes
+            ct.duration_minutes,
+            ct.consultation_fee,
+            ct.capacity
         FROM doctor_availability da
         JOIN consultation_types ct
             ON ct.consultation_type_id = da.consultation_type_id
+           AND ct.doctor_id = da.doctor_id
         WHERE da.day_of_week = %s
           AND da.is_active = TRUE
           AND ct.is_active = TRUE
@@ -154,6 +157,9 @@ def create_slot(slots_table, availability, start_ist, end_ist, connection):
         "doctorId": int(availability["doctor_id"]),
         "hospitalId": int(availability["hospital_id"]),
         "consultationTypeId": int(availability["consultation_type_id"]),
+        "consultationFee": str(availability.get("consultation_fee", "0.00")),
+        "capacity": int(availability.get("capacity", 1)),
+        "bookedCount": 0,
         "slotTime": start_ist.isoformat(timespec="seconds"),
         "endTime": end_ist.isoformat(timespec="seconds"),
         "status": "AVAILABLE",

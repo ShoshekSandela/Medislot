@@ -9,6 +9,8 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 secrets_client = boto3.client("secretsmanager")
+s3_client = boto3.client("s3")
+dynamodb = boto3.resource("dynamodb")
 
 
 def response(status, data):
@@ -172,103 +174,75 @@ def update_profile(connection, doctor_id, data):
     return response(200, {"message": "Doctor profile updated"})
 
 
-def consultation_types(connection, method, data, item_id=None):
+def consultation_types(connection, doctor_id, method, data, item_id=None):
     with connection.cursor() as cursor:
         if method == "GET":
             if item_id:
                 cursor.execute(
-                    """
-                    SELECT *
-                    FROM consultation_types
-                    WHERE consultation_type_id = %s
-                    """,
-                    (item_id,),
+                    "SELECT * FROM consultation_types WHERE consultation_type_id = %s AND doctor_id = %s",
+                    (item_id, doctor_id),
                 )
                 row = cursor.fetchone()
-                return (
-                    response(200, row)
-                    if row
-                    else response(404, {"message": "Consultation type not found"})
-                )
-
+                return response(200, row) if row else response(404, {"message": "Consultation type not found"})
             cursor.execute(
-                """
-                SELECT *
-                FROM consultation_types
-                WHERE is_active = TRUE
-                ORDER BY type_name
-                """
+                "SELECT * FROM consultation_types WHERE doctor_id = %s AND is_active = TRUE ORDER BY type_name",
+                (doctor_id,),
             )
             return response(200, cursor.fetchall())
 
         if method == "POST":
             required = ["type_name", "duration_minutes", "consultation_fee"]
-            missing = [
-                key for key in required if data.get(key) in (None, "")
-            ]
+            missing = [key for key in required if data.get(key) in (None, "")]
             if missing:
-                return response(
-                    400,
-                    {"message": "Missing required fields", "fields": missing},
-                )
-
+                return response(400, {"message": "Missing required fields", "fields": missing})
             try:
+                type_name = str(data["type_name"]).strip()
                 duration = int(data["duration_minutes"])
                 capacity = int(data.get("capacity", 1))
                 fee = float(data["consultation_fee"])
             except (TypeError, ValueError):
                 return response(400, {"message": "duration_minutes, capacity and consultation_fee must be numeric"})
-            if duration <= 0 or capacity <= 0 or fee < 0:
-                return response(400, {"message": "Duration and capacity must be positive; fee cannot be negative"})
+            if not type_name or duration <= 0 or capacity <= 0 or fee < 0:
+                return response(400, {"message": "Type name is required; duration/capacity must be positive and fee cannot be negative"})
+            if type_name.lower() == "health camp session":
+                if duration != 60 or not 2 <= capacity <= 10:
+                    return response(400, {"message": "Health Camp Session must be 60 minutes with capacity 2 to 10"})
+            elif capacity != 1:
+                return response(400, {"message": "Only Health Camp Session may have capacity greater than 1"})
             cursor.execute(
                 """
                 INSERT INTO consultation_types
-                    (type_name, duration_minutes, capacity, description, is_active, consultation_fee)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                    (doctor_id, type_name, duration_minutes, capacity, description, is_active, consultation_fee)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
-                (str(data["type_name"]).strip(), duration, capacity,
-                 data.get("description"), bool(data.get("is_active", True)), fee),
+                (doctor_id, type_name, duration, capacity, data.get("description"),
+                 bool(data.get("is_active", True)), fee),
             )
             connection.commit()
-            return response(201, {
-                "message": "Consultation type created",
-                "consultation_type_id": int(cursor.lastrowid),
-            })
+            return response(201, {"message": "Consultation type created", "consultation_type_id": int(cursor.lastrowid)})
 
         if method == "PUT" and item_id:
-            allowed = {
-                "type_name",
-                "duration_minutes",
-                "capacity",
-                "description",
-                "is_active",
-                "consultation_fee",
-            }
+            allowed = {"type_name", "duration_minutes", "capacity", "description", "is_active", "consultation_fee"}
             updates = {key: value for key, value in data.items() if key in allowed}
             if not updates:
                 return response(400, {"message": "No valid fields"})
-
             cursor.execute(
-                f"""
-                UPDATE consultation_types
-                SET {", ".join(f"{key} = %s" for key in updates)}
-                WHERE consultation_type_id = %s
-                """,
-                list(updates.values()) + [item_id],
+                f"UPDATE consultation_types SET {', '.join(f'{key} = %s' for key in updates)} WHERE consultation_type_id = %s AND doctor_id = %s",
+                list(updates.values()) + [item_id, doctor_id],
             )
             connection.commit()
+            if cursor.rowcount == 0:
+                return response(404, {"message": "Consultation type not found"})
             return response(200, {"message": "Consultation type updated"})
 
         if method == "DELETE" and item_id:
             cursor.execute(
-                """
-                UPDATE consultation_types
-                SET is_active = FALSE
-                WHERE consultation_type_id = %s
-                """,
-                (item_id,),
+                "UPDATE consultation_types SET is_active = FALSE WHERE consultation_type_id = %s AND doctor_id = %s",
+                (item_id, doctor_id),
             )
             connection.commit()
+            if cursor.rowcount == 0:
+                return response(404, {"message": "Consultation type not found"})
             return response(200, {"message": "Consultation type deactivated"})
 
     return response(405, {"message": "Method not allowed"})
@@ -324,6 +298,13 @@ def availability(connection, doctor_id, method, data, item_id=None):
             )
             if not cursor.fetchone():
                 return response(400, {"message": "Doctor is not assigned to this hospital"})
+
+            cursor.execute(
+                "SELECT 1 FROM consultation_types WHERE consultation_type_id = %s AND doctor_id = %s AND is_active = TRUE LIMIT 1",
+                (consultation_type_id, doctor_id),
+            )
+            if not cursor.fetchone():
+                return response(400, {"message": "Consultation type does not belong to this doctor"})
             cursor.execute(
                 """
                 INSERT INTO doctor_availability
@@ -449,6 +430,112 @@ def blackouts(connection, doctor_id, method, data, item_id=None):
     return response(405, {"message": "Method not allowed"})
 
 
+
+def create_photo_upload(connection, doctor_id, data):
+    """Create a short-lived S3 PUT URL and persist the doctor-owned object key."""
+    bucket = os.environ.get("PROFILE_PHOTOS_BUCKET")
+    if not bucket:
+        return response(500, {"message": "PROFILE_PHOTOS_BUCKET is not configured"})
+
+    filename = str(data.get("fileName") or "").strip()
+    content_type = str(data.get("contentType") or "").strip().lower()
+    allowed_types = {"image/jpeg", "image/png", "image/webp"}
+    if not filename or content_type not in allowed_types:
+        return response(400, {
+            "message": "fileName is required and contentType must be image/jpeg, image/png, or image/webp"
+        })
+
+    extension = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+    }[content_type]
+    safe_stem = os.path.splitext(os.path.basename(filename))[0]
+    safe_stem = "".join(ch for ch in safe_stem if ch.isalnum() or ch in "-_")[:60] or "profile"
+    object_key = f"doctors/{doctor_id}/profile/{safe_stem}{extension}"
+
+    try:
+        upload_url = s3_client.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket": bucket,
+                "Key": object_key,
+                "ContentType": content_type,
+            },
+            ExpiresIn=300,
+        )
+    except Exception:
+        logger.exception("Could not generate doctor photo upload URL")
+        return response(500, {"message": "Could not generate photo upload URL"})
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE doctors
+            SET profile_photo_url = %s, updated_at = CURRENT_TIMESTAMP(3)
+            WHERE doctor_id = %s
+            """,
+            (object_key, doctor_id),
+        )
+        if cursor.rowcount == 0:
+            connection.rollback()
+            return response(404, {"message": "Doctor profile not found"})
+    connection.commit()
+
+    return response(200, {
+        "message": "Pre-signed upload URL generated",
+        "uploadUrl": upload_url,
+        "objectKey": object_key,
+        "contentType": content_type,
+        "expiresIn": 300,
+    })
+
+
+def doctor_schedule(doctor_id, query_params):
+    """Return this doctor's generated slots for one IST calendar date."""
+    date_value = (query_params or {}).get("date")
+    if not date_value:
+        return response(400, {"message": "date query parameter is required (YYYY-MM-DD)"})
+    try:
+        target_date = datetime.strptime(date_value, "%Y-%m-%d").date()
+    except ValueError:
+        return response(400, {"message": "date must use YYYY-MM-DD format"})
+
+    table_name = os.environ.get("SLOTS_TABLE_NAME")
+    if not table_name:
+        return response(500, {"message": "SLOTS_TABLE_NAME is not configured"})
+
+    try:
+        table = dynamodb.Table(table_name)
+        result = table.scan(
+            FilterExpression="doctorId = :doctor_id AND begins_with(slotTime, :day)",
+            ExpressionAttributeValues={
+                ":doctor_id": int(doctor_id),
+                ":day": target_date.isoformat(),
+            },
+        )
+        slots = result.get("Items", [])
+        while result.get("LastEvaluatedKey"):
+            result = table.scan(
+                FilterExpression="doctorId = :doctor_id AND begins_with(slotTime, :day)",
+                ExpressionAttributeValues={
+                    ":doctor_id": int(doctor_id),
+                    ":day": target_date.isoformat(),
+                },
+                ExclusiveStartKey=result["LastEvaluatedKey"],
+            )
+            slots.extend(result.get("Items", []))
+        slots.sort(key=lambda item: item.get("slotTime", ""))
+        return response(200, {
+            "date": target_date.isoformat(),
+            "timezone": "Asia/Kolkata",
+            "slots": slots,
+        })
+    except Exception:
+        logger.exception("Doctor schedule lookup failed")
+        return response(500, {"message": "Could not retrieve doctor schedule"})
+
+
 def lambda_handler(event, context):
     try:
         identity, role = get_auth(event)
@@ -501,7 +588,7 @@ def lambda_handler(event, context):
             if not doctor_id:
                 return response(404, {"message": "Doctor profile not found"})
 
-            # GET /doctors/me and PUT /doctors (existing route) refer to
+            # GET/PUT /doctors/me refer to
             # the currently authenticated doctor's own profile.
             if request_path == "/doctors/me" and method == "GET":
                 profile = get_profile(connection, doctor_id)
@@ -515,20 +602,20 @@ def lambda_handler(event, context):
                 return update_profile(connection, doctor_id, data)
 
             if len(parts) >= 2 and parts[0] == "doctors":
-                resource = parts[1]
-                item_id = parts[2] if len(parts) > 2 else None
+                resource_parts = parts[1:]
+                # Support /doctors/me/<resource> plus legacy /doctors/<resource>.
+                if resource_parts and resource_parts[0] == "me":
+                    resource_parts = resource_parts[1:]
+                resource = resource_parts[0] if resource_parts else ""
+                item_id = resource_parts[1] if len(resource_parts) > 1 else None
 
                 if item_id is not None and (not item_id.isdigit() or int(item_id) <= 0):
                     return response(400, {"message": "Resource ID must be a positive integer"})
 
                 if resource == "consultation-types":
-                    return consultation_types(connection, method, data, item_id)
-
+                    return consultation_types(connection, doctor_id, method, data, item_id)
                 if resource == "availability":
-                    return availability(
-                        connection, doctor_id, method, data, item_id
-                    )
-
+                    return availability(connection, doctor_id, method, data, item_id)
                 if resource == "blackouts":
                     return blackouts(connection, doctor_id, method, data, item_id)
 
