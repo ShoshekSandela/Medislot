@@ -169,8 +169,13 @@ def update_profile(connection, doctor_id, data):
         )
 
         if cursor.rowcount == 0:
-            connection.rollback()
-            return response(404, {"message": "Doctor profile not found"})
+            cursor.execute(
+                "SELECT doctor_id FROM doctors WHERE doctor_id = %s",
+                (doctor_id,),
+            )
+            if not cursor.fetchone():
+                connection.rollback()
+                return response(404, {"message": "Doctor profile not found"})
 
     connection.commit()
     return response(200, {"message": "Doctor profile updated"})
@@ -181,13 +186,24 @@ def consultation_types(connection, doctor_id, method, data, item_id=None):
         if method == "GET":
             if item_id:
                 cursor.execute(
-                    "SELECT * FROM consultation_types WHERE consultation_type_id = %s AND doctor_id = %s",
+                    """
+                    SELECT *
+                    FROM consultation_types
+                    WHERE consultation_type_id = %s
+                      AND (doctor_id = %s OR doctor_id IS NULL)
+                    """,
                     (item_id, doctor_id),
                 )
                 row = cursor.fetchone()
                 return response(200, row) if row else response(404, {"message": "Consultation type not found"})
             cursor.execute(
-                "SELECT * FROM consultation_types WHERE doctor_id = %s AND is_active = TRUE ORDER BY type_name",
+                """
+                SELECT *
+                FROM consultation_types
+                WHERE is_active = TRUE
+                  AND (doctor_id = %s OR doctor_id IS NULL)
+                ORDER BY type_name
+                """,
                 (doctor_id,),
             )
             return response(200, cursor.fetchall())
@@ -302,7 +318,14 @@ def availability(connection, doctor_id, method, data, item_id=None):
                 return response(400, {"message": "Doctor is not assigned to this hospital"})
 
             cursor.execute(
-                "SELECT 1 FROM consultation_types WHERE consultation_type_id = %s AND doctor_id = %s AND is_active = TRUE LIMIT 1",
+                """
+                SELECT 1
+                FROM consultation_types
+                WHERE consultation_type_id = %s
+                  AND (doctor_id = %s OR doctor_id IS NULL)
+                  AND is_active = TRUE
+                LIMIT 1
+                """,
                 (consultation_type_id, doctor_id),
             )
             if not cursor.fetchone():
