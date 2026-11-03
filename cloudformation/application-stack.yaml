@@ -252,7 +252,7 @@ Resources:
                 Action: lambda:InvokeFunction
                 Resource: !GetAtt SlotMaterializerLambda.Arn
 
-  SlotMaterializerScheduleV2:
+  SlotMaterializerDailySchedule:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: !Sub medislot-${Environment}-slot-materializer-daily
