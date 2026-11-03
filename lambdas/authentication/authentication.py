@@ -453,31 +453,47 @@ def login(event):
         return response(500, {"message": "Internal server error"})
 
 def lambda_handler(event, context):
-    """API Gateway Lambda entry point for MediSlot authentication."""
+    """API Gateway entry point for MediSlot authentication."""
     try:
         event = event or {}
         request_context = event.get("requestContext") or {}
+
         method = (
             event.get("httpMethod")
             or (request_context.get("http") or {}).get("method")
             or ""
         ).upper()
 
-        # REST API integrations generally provide resource; HTTP APIs provide rawPath.
+        # Do not use event["resource"] first: REST API proxy resources
+        # often contain the template /auth/{proxy+}, not the real path.
         path = (
-            event.get("resource")
+            event.get("path")
             or event.get("rawPath")
-            or event.get("path")
             or request_context.get("path")
             or ""
         )
         path = str(path).split("?", 1)[0].rstrip("/").lower()
 
+        # Recover the route from API Gateway's proxy path parameter if needed.
+        if not path or "{proxy+}" in path or path.endswith("/{proxy}"):
+            path_parameters = event.get("pathParameters") or {}
+            proxy_value = path_parameters.get("proxy")
+            if proxy_value:
+                path = "/auth/" + str(proxy_value).strip("/").lower()
+            elif not path:
+                path = str(event.get("resource") or "").split("?", 1)[0].rstrip("/").lower()
+
+        # Remove stage prefix such as /dev from /dev/auth/login.
         stage = str(request_context.get("stage") or "").strip("/").lower()
-        if stage and path.startswith("/" + stage + "/"):
+        if stage and (path == "/" + stage or path.startswith("/" + stage + "/")):
             path = path[len(stage) + 1:]
 
-        logger.info("Authentication request: method=%s path=%s", method, path)
+        path = "/" + path.lstrip("/")
+
+        logger.info(
+            "Authentication request: method=%s path=%s resource=%s",
+            method, path, event.get("resource")
+        )
 
         if method == "OPTIONS":
             return {
@@ -486,7 +502,9 @@ def lambda_handler(event, context):
                     "Content-Type": "application/json",
                     "Cache-Control": "no-store",
                     "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Headers": "Content-Type,Authorization,X-DB-Init-Token",
+                    "Access-Control-Allow-Headers": (
+                        "Content-Type,Authorization,X-DB-Init-Token"
+                    ),
                     "Access-Control-Allow-Methods": "OPTIONS,POST"
                 },
                 "body": ""
@@ -494,12 +512,19 @@ def lambda_handler(event, context):
 
         if method == "POST" and path == "/auth/register":
             return register(event)
+
         if method == "POST" and path == "/auth/login":
             return login(event)
+
         if method == "POST" and path == "/auth/init-db":
             return initialize_database(event)
 
-        return response(404, {"message": "Route not found", "method": method, "path": path})
+        return response(404, {
+            "message": "Route not found",
+            "method": method,
+            "path": path,
+            "resource": event.get("resource")
+        })
 
     except Exception:
         logger.exception("Authentication Lambda handler failed")
