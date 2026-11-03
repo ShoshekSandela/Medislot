@@ -592,8 +592,8 @@ def refresh_session(event):
 
 def logout(event):
     """
-    Revoke the supplied refresh token. Logout is idempotent for a token
-    that is already revoked, but rejects an unknown token.
+    Revoke a refresh token only when it belongs to the same account as the
+    access token supplied in the Authorization: Bearer header.
     """
     try:
         data = parse_body(event)
@@ -604,9 +604,28 @@ def logout(event):
     if not isinstance(refresh_token, str) or not refresh_token.strip():
         return response(400, {"message": "refreshToken is required"})
 
-    token_id = "REFRESH#" + sha256_hex(refresh_token.strip())
+    access_token = bearer_token(event)
+    if not access_token:
+        return response(401, {"message": "A valid Bearer access token is required"})
 
     try:
+        # Verify access-token signature, issuer, audience and expiry.
+        try:
+            access_claims = decode_access_token(access_token)
+        except jwt.ExpiredSignatureError:
+            return response(401, {"message": "Access token has expired"})
+        except jwt.InvalidTokenError:
+            return response(401, {"message": "Invalid access token"})
+
+        access_profile_id = str(
+            access_claims.get("profileId") or access_claims.get("sub") or ""
+        )
+        access_role = str(access_claims.get("role", "")).strip().lower()
+
+        if not access_profile_id or access_role not in {"patient", "doctor"}:
+            return response(401, {"message": "Invalid access token"})
+
+        token_id = "REFRESH#" + sha256_hex(refresh_token.strip())
         result = token_table.get_item(
             Key={"tokenId": token_id},
             ConsistentRead=True
@@ -616,22 +635,57 @@ def logout(event):
         if not item or item.get("tokenType") != "REFRESH":
             return response(401, {"message": "Invalid refresh token"})
 
+        now = int(time.time())
+        expires_at = int(item.get("expiresAt", 0))
+        if expires_at <= now:
+            return response(401, {"message": "Refresh token has expired"})
+
+        refresh_profile_id = str(item.get("profileId", ""))
+        refresh_role = str(item.get("role", "")).strip().lower()
+
+        # Critical binding check: access and refresh tokens must belong to
+        # exactly the same profile ID AND role.
+        if (
+            not refresh_profile_id
+            or refresh_role not in {"patient", "doctor"}
+            or access_profile_id != refresh_profile_id
+            or access_role != refresh_role
+        ):
+            return response(401, {
+                "message": "Access token and refresh token do not belong to the same account"
+            })
+
         if item.get("revoked") is True:
             return response(200, {"message": "Logout successful"})
 
         token_table.update_item(
             Key={"tokenId": token_id},
             UpdateExpression="SET revoked = :revoked, revokedAt = :revoked_at",
-            ConditionExpression="attribute_exists(tokenId) AND tokenType = :token_type",
+            ConditionExpression=(
+                "attribute_exists(tokenId) AND tokenType = :token_type "
+                "AND profileId = :profile_id AND #role = :role "
+                "AND expiresAt > :now AND revoked = :not_revoked"
+            ),
+            ExpressionAttributeNames={"#role": "role"},
             ExpressionAttributeValues={
                 ":revoked": True,
-                ":revoked_at": int(time.time()),
-                ":token_type": "REFRESH"
+                ":revoked_at": now,
+                ":token_type": "REFRESH",
+                ":profile_id": refresh_profile_id,
+                ":role": refresh_role,
+                ":now": now,
+                ":not_revoked": False
             }
         )
 
         return response(200, {"message": "Logout successful"})
 
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code")
+        if error_code == "ConditionalCheckFailedException":
+            return response(401, {"message": "Refresh token is invalid, expired, or already revoked"})
+        logger.exception("Logout DynamoDB operation failed")
+        return response(500, {"message": "Internal server error"})
     except Exception:
         logger.exception("Logout failed")
         return response(500, {"message": "Internal server error"})
