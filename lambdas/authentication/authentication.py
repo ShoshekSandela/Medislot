@@ -232,7 +232,10 @@ def register(event, role=None):
     except ValueError as exc:
         return response(400, {"message": str(exc)})
 
-    role = (role or str(data.get("role") or "")).strip().lower()
+    role_value = role if role is not None else data.get("role", "")
+    if not isinstance(role_value, str):
+        return response(400, {"message": "role must be DOCTOR or PATIENT"})
+    role = role_value.strip().lower()
     if role not in {"doctor", "patient"}:
         return response(400, {"message": "role must be DOCTOR or PATIENT"})
 
@@ -297,6 +300,8 @@ def register(event, role=None):
                     account_status = "PENDING"
                 else:
                     gender = data.get("gender")
+                    if isinstance(gender, str):
+                        gender = gender.strip().lower()
                     if gender not in (None, "", "male", "female", "other", "prefer_not_to_say"):
                         return response(400, {"message": "Invalid gender"})
                     dob = data.get("date_of_birth")
@@ -446,3 +451,57 @@ def login(event):
     except Exception:
         logger.exception("Login failed")
         return response(500, {"message": "Internal server error"})
+
+def lambda_handler(event, context):
+    """API Gateway Lambda entry point for MediSlot authentication."""
+    try:
+        event = event or {}
+        request_context = event.get("requestContext") or {}
+        method = (
+            event.get("httpMethod")
+            or (request_context.get("http") or {}).get("method")
+            or ""
+        ).upper()
+
+        # REST API integrations generally provide resource; HTTP APIs provide rawPath.
+        path = (
+            event.get("resource")
+            or event.get("rawPath")
+            or event.get("path")
+            or request_context.get("path")
+            or ""
+        )
+        path = str(path).split("?", 1)[0].rstrip("/").lower()
+
+        stage = str(request_context.get("stage") or "").strip("/").lower()
+        if stage and path.startswith("/" + stage + "/"):
+            path = path[len(stage) + 1:]
+
+        logger.info("Authentication request: method=%s path=%s", method, path)
+
+        if method == "OPTIONS":
+            return {
+                "statusCode": 200,
+                "headers": {
+                    "Content-Type": "application/json",
+                    "Cache-Control": "no-store",
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Headers": "Content-Type,Authorization,X-DB-Init-Token",
+                    "Access-Control-Allow-Methods": "OPTIONS,POST"
+                },
+                "body": ""
+            }
+
+        if method == "POST" and path == "/auth/register":
+            return register(event)
+        if method == "POST" and path == "/auth/login":
+            return login(event)
+        if method == "POST" and path == "/auth/init-db":
+            return initialize_database(event)
+
+        return response(404, {"message": "Route not found", "method": method, "path": path})
+
+    except Exception:
+        logger.exception("Authentication Lambda handler failed")
+        return response(500, {"message": "Internal server error"})
+
