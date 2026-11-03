@@ -261,7 +261,7 @@ Resources:
       ScheduleExpression: rate(1 day)
       ScheduleExpressionTimezone: Asia/Kolkata
       FlexibleTimeWindow:
-        Mode: OFF
+        Mode: "OFF"
       Target:
         Arn: !GetAtt SlotMaterializerLambda.Arn
         RoleArn: !GetAtt SlotMaterializerSchedulerRole.Arn
