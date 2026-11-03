@@ -1,6 +1,7 @@
 -- MediSlot schema matching the supplied ER diagram.
 -- No users table. Doctor and patient identities are their own numeric profile IDs.
 -- Use on a NEW/EMPTY database only; existing UUID-based databases need a migration.
+-- All availability, blackout, appointment, and generated slot times use UTC.
 
 CREATE DATABASE IF NOT EXISTS medislot CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE medislot;
@@ -43,7 +44,7 @@ CREATE TABLE IF NOT EXISTS hospitals (
   state VARCHAR(100) NOT NULL,
   postal_code VARCHAR(20),
   country VARCHAR(100) NOT NULL DEFAULT 'India',
-  timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Kolkata',
+  timezone VARCHAR(64) NOT NULL DEFAULT 'UTC',
   phone VARCHAR(20),
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -122,10 +123,10 @@ CREATE TABLE IF NOT EXISTS doctor_availability (
   doctor_id BIGINT UNSIGNED NOT NULL,
   hospital_id BIGINT UNSIGNED NOT NULL,
   consultation_type_id BIGINT UNSIGNED NOT NULL,
-  day_of_week TINYINT UNSIGNED NOT NULL COMMENT '0=Sunday, 6=Saturday',
+  day_of_week TINYINT UNSIGNED NOT NULL COMMENT '0=Sunday, 1=Monday, ..., 6=Saturday; availability times are UTC',
   start_time TIME NOT NULL,
   end_time TIME NOT NULL,
-  timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Kolkata',
+  timezone VARCHAR(64) NOT NULL DEFAULT 'UTC',
   effective_from DATE NOT NULL,
   effective_until DATE,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -150,7 +151,7 @@ CREATE TABLE IF NOT EXISTS appointments (
   slot_id VARCHAR(128) NOT NULL,
   start_at_utc DATETIME NOT NULL,
   end_at_utc DATETIME NOT NULL,
-  timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Kolkata',
+  timezone VARCHAR(64) NOT NULL DEFAULT 'UTC',
   status ENUM('BOOKED','CANCELLED','RESCHEDULED','COMPLETED') NOT NULL DEFAULT 'BOOKED',
   reschedule_count TINYINT UNSIGNED NOT NULL DEFAULT 0,
   cancelled_at_utc DATETIME,
@@ -189,7 +190,7 @@ INSERT INTO consultation_types
 VALUES
     ('15 Minutes', 15, 1, '15-minute consultation', TRUE, 0.00),
     ('30 Minutes', 30, 1, '30-minute consultation', TRUE, 0.00),
-    ('60 Minutes', 60, 1, '60-minute consultation', TRUE, 0.00)
+    ('60 Minutes', 60, 1, '60-minute consultation', TRUE, 0.00) AS new_values
 ON DUPLICATE KEY UPDATE
-    duration_minutes = VALUES(duration_minutes),
+    duration_minutes = new_values.duration_minutes,
     is_active = TRUE;
