@@ -265,12 +265,38 @@ def register(event, role=None):
         with connect_db() as conn:
             with conn.cursor() as cur:
                 if role == "doctor":
+                    # registration_number is optional in MediSlot.
+                    # The DB column must allow NULL (see ALTER TABLE below).
                     registration_number = data.get("registration_number")
-                    if not isinstance(registration_number, str) or not registration_number.strip():
-                        return response(400, {"message": "registration_number is required"})
-                    registration_number = registration_number.strip()
-                    if len(registration_number) > 100:
-                        return response(400, {"message": "registration_number must be at most 100 characters"})
+                    if registration_number is not None:
+                        if not isinstance(registration_number, str):
+                            return response(400, {"message": "registration_number must be a string"})
+                        registration_number = registration_number.strip() or None
+                        if registration_number and len(registration_number) > 100:
+                            return response(400, {"message": "registration_number must be at most 100 characters"})
+
+                    # Check email separately so the API can identify the duplicate field.
+                    cur.execute(
+                        "SELECT doctor_id FROM doctors WHERE email = %s LIMIT 1",
+                        (email,)
+                    )
+                    if cur.fetchone():
+                        return response(409, {
+                            "message": "A doctor account with this email already exists. Please log in or use another email.",
+                            "field": "email"
+                        })
+
+                    if registration_number:
+                        cur.execute(
+                            "SELECT doctor_id FROM doctors WHERE registration_number = %s LIMIT 1",
+                            (registration_number,)
+                        )
+                        if cur.fetchone():
+                            return response(409, {
+                                "message": "This doctor registration number is already registered.",
+                                "field": "registration_number"
+                            })
+
                     try:
                         experience = int(data.get("experience_years") or 0)
                     except (TypeError, ValueError):
@@ -299,6 +325,16 @@ def register(event, role=None):
                         )
                     account_status = "PENDING"
                 else:
+                    cur.execute(
+                        "SELECT patient_id FROM patients WHERE email = %s LIMIT 1",
+                        (email,)
+                    )
+                    if cur.fetchone():
+                        return response(409, {
+                            "message": "A patient account with this email already exists. Please log in or use another email.",
+                            "field": "email"
+                        })
+
                     gender = data.get("gender")
                     if isinstance(gender, str):
                         gender = gender.strip().lower()
@@ -340,7 +376,22 @@ def register(event, role=None):
         code = exc.args[0] if exc.args else None
         logger.info("Registration conflict: %s", exc.args)
         if code == 1062:
-            return response(409, {"message": "Email or registration number already exists"})
+            duplicate_detail = str(exc.args[1] if len(exc.args) > 1 else "").lower()
+            if "registration" in duplicate_detail:
+                return response(409, {
+                    "message": "This doctor registration number is already registered.",
+                    "field": "registration_number"
+                })
+            if "email" in duplicate_detail:
+                if role == "patient":
+                    message = "A patient account with this email already exists. Please log in or use another email."
+                else:
+                    message = "A doctor account with this email already exists."
+                return response(409, {"message": message, "field": "email"})
+            return response(409, {
+                "message": "This account conflicts with an existing record. Check the email and any supplied registration number.",
+                "field": "duplicate"
+            })
         if code == 1452:
             return response(400, {"message": "Referenced hospital does not exist"})
         return response(400, {"message": "Invalid or conflicting registration data"})
