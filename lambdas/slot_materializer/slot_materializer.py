@@ -115,6 +115,7 @@ def get_availability(connection, day_of_week, target_date):
         WHERE da.day_of_week = %s
           AND da.is_active = TRUE
           AND ct.is_active = TRUE
+          AND (ct.doctor_id = da.doctor_id OR ct.doctor_id IS NULL)
           AND da.effective_from <= %s
           AND (
               da.effective_until IS NULL
@@ -241,7 +242,8 @@ def materialize_day(connection, slots_table, target_date):
     results = {
         "created": 0,
         "duplicates": 0,
-        "blackouts": 0
+        "blackouts": 0,
+        "availability_records": len(availability_records),
     }
 
     buffer_minutes = int(
@@ -357,7 +359,8 @@ def lambda_handler(event, context):
     total_results = {
         "created": 0,
         "duplicates": 0,
-        "blackouts": 0
+        "blackouts": 0,
+        "availability_records": 0,
     }
 
     try:

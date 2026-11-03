@@ -592,7 +592,7 @@ def lambda_handler(event, context):
 
         # GET /doctors and GET /doctors/{doctorId} are available to
         # authenticated patients, doctors, and admins.
-        if method == "GET" and request_path == "/doctors/me":
+        if method == "GET" and request_path == "/doctors/profile":
             if role != "doctor":
                 return response(403, {"message": "Doctor access required"})
             with get_db_connection() as connection:
@@ -604,7 +604,7 @@ def lambda_handler(event, context):
 
         if method == "GET" and (
             request_path == "/doctors"
-            or (len(parts) == 2 and parts[0] == "doctors" and parts[1] != "me")
+            or (len(parts) == 2 and parts[0] == "doctors" and parts[1] not in {"profile", "photo", "schedule", "availability", "blackouts", "consultation-types", "appointments", "slots"})
         ):
             if role not in {"patient", "doctor", "admin"}:
                 return response(403, {"message": "Valid account role required"})
@@ -631,9 +631,8 @@ def lambda_handler(event, context):
             if not doctor_id:
                 return response(404, {"message": "Doctor profile not found"})
 
-            # GET/PUT /doctors/me refer to
-            # the currently authenticated doctor's own profile.
-            if request_path == "/doctors/me" and method == "GET":
+            # /doctors/profile refers to the authenticated doctor's own profile.
+            if request_path == "/doctors/profile" and method == "GET":
                 profile = get_profile(connection, doctor_id)
                 return (
                     response(200, profile)
@@ -641,22 +640,21 @@ def lambda_handler(event, context):
                     else response(404, {"message": "Profile not found"})
                 )
 
-            if request_path in {"/doctors/me", "/doctors"} and method == "PUT":
+            if request_path in {"/doctors/profile", "/doctors"} and method == "PUT":
                 return update_profile(connection, doctor_id, data)
 
-            if request_path == "/doctors/me/photo" and method == "POST":
+            if request_path == "/doctors/photo" and method == "POST":
                 return create_photo_upload(connection, doctor_id, data)
 
-            if request_path == "/doctors/me/schedule" and method == "GET":
+            if request_path == "/doctors/schedule" and method == "GET":
                 return doctor_schedule(
                     connection, doctor_id, event.get("queryStringParameters") or {}
                 )
 
             if len(parts) >= 2 and parts[0] == "doctors":
                 resource_parts = parts[1:]
-                # Support /doctors/me/<resource> plus legacy /doctors/<resource>.
-                if resource_parts and resource_parts[0] == "me":
-                    resource_parts = resource_parts[1:]
+                # Doctor-owned resources use /doctors/<resource>; doctor identity
+                # always comes from the verified authorizer context, never the body.
                 resource = resource_parts[0] if resource_parts else ""
                 item_id = resource_parts[1] if len(resource_parts) > 1 else None
 
