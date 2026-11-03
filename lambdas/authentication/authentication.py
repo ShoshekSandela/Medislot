@@ -265,15 +265,34 @@ def register(event, role=None):
         with connect_db() as conn:
             with conn.cursor() as cur:
                 if role == "doctor":
-                    # Doctor registration uses email as the account identifier.
-                    # registration_number is deliberately not requested or inserted.
+                    # Both doctor email and registration number must be unique.
+                    registration_number = data.get("registration_number")
+                    if not isinstance(registration_number, str) or not registration_number.strip():
+                        return response(400, {
+                            "message": "Doctor registration number is required."
+                        })
+                    registration_number = registration_number.strip()
+                    if len(registration_number) > 100:
+                        return response(400, {
+                            "message": "Doctor registration number must not exceed 100 characters."
+                        })
+
                     cur.execute(
                         "SELECT doctor_id FROM doctors WHERE email = %s LIMIT 1",
                         (email,)
                     )
                     if cur.fetchone():
                         return response(409, {
-                            "message": "A doctor account with this email already exists. Please log in or use another email."
+                            "message": "A doctor account with this email already exists. "
+                        })
+
+                    cur.execute(
+                        "SELECT doctor_id FROM doctors WHERE registration_number = %s LIMIT 1",
+                        (registration_number,)
+                    )
+                    if cur.fetchone():
+                        return response(409, {
+                            "message": "This doctor registration number is already registered."
                         })
 
                     try:
@@ -286,11 +305,12 @@ def register(event, role=None):
                     cur.execute(
                         """
                         INSERT INTO doctors
-                          (first_name, last_name, email, password_hash,
+                          (registration_number, first_name, last_name, email, password_hash,
                            qualification, experience_years, profile_status)
-                        VALUES (%s, %s, %s, %s, %s, %s, 'ACTIVE')
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE')
                         """,
                         (
+                            registration_number,
                             first_name,
                             last_name or "",
                             email,
@@ -363,6 +383,11 @@ def register(event, role=None):
         code_number = exc.args[0] if exc.args else None
         logger.info("Registration conflict: %s", exc.args)
         if code_number == 1062:
+            duplicate_detail = str(exc.args[1] if len(exc.args) > 1 else "").lower()
+            if role == "doctor" and "registration" in duplicate_detail:
+                return response(409, {
+                    "message": "This doctor registration number is already registered. "
+                })
             if role == "patient":
                 message = "A patient account with this email already exists. Please log in or use another email."
             else:
