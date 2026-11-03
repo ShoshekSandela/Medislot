@@ -525,7 +525,10 @@ Resources:
   # API DEPLOYMENT
   # =========================================================
 
-  MediSlotApiDeployment:
+  # NOTE: API Gateway only publishes new routes when a NEW deployment is created.
+  # CloudFormation creates one only when this logical ID changes, so bump the
+  # suffix (V2 -> V3 ...) whenever routes or methods are added or changed.
+  MediSlotApiDeploymentV2:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - AuthMethod
