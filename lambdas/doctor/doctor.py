@@ -249,16 +249,26 @@ def consultation_types(connection, doctor_id, method, data, item_id=None):
                     "message": "Only Health Camp Session may have capacity greater than 1"
                 })
 
-            cursor.execute(
-                """
-                INSERT INTO consultation_types
-                    (type_name, duration_minutes, capacity, description,
-                     is_active, consultation_fee)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                """,
-                (type_name, duration, capacity, data.get("description"),
-                 bool(data.get("is_active", True)), fee),
-            )
+            # Convert MySQL duplicate-key errors into a clear HTTP 409.
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO consultation_types
+                        (type_name, duration_minutes, capacity, description,
+                         is_active, consultation_fee)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (type_name, duration, capacity, data.get("description"),
+                     bool(data.get("is_active", True)), fee),
+                )
+            except pymysql.err.IntegrityError as exc:
+                connection.rollback()
+                if exc.args and exc.args[0] == 1062:
+                    return response(409, {
+                        "message": "A consultation type with this name already exists."
+                    })
+                raise
+
             connection.commit()
             return response(201, {
                 "message": "Consultation type created",
@@ -295,10 +305,19 @@ def consultation_types(connection, doctor_id, method, data, item_id=None):
                     "message": "duration_minutes and capacity must be positive integers; consultation_fee must be non-negative"
                 })
 
-            cursor.execute(
-                f"UPDATE consultation_types SET {', '.join(f'{key} = %s' for key in updates)} WHERE consultation_type_id = %s",
-                list(updates.values()) + [item_id],
-            )
+            try:
+                cursor.execute(
+                    f"UPDATE consultation_types SET {', '.join(f'{key} = %s' for key in updates)} WHERE consultation_type_id = %s",
+                    list(updates.values()) + [item_id],
+                )
+            except pymysql.err.IntegrityError as exc:
+                connection.rollback()
+                if exc.args and exc.args[0] == 1062:
+                    return response(409, {
+                        "message": "A consultation type with this name already exists."
+                    })
+                raise
+
             connection.commit()
             if cursor.rowcount == 0:
                 cursor.execute(
