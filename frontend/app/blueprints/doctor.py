@@ -98,6 +98,14 @@ def profile():
    v=f.get(k,"").strip()
    if v!=session.get("profile",{}).get(k): body[k]=v
   try:
+   selected_ids=[]
+   for value in f.getlist("specialisation_ids"):
+    selected_ids.append(int(value))
+   body["specialisation_ids"]=selected_ids
+  except ValueError:
+   flash("Invalid specialisation selection.","error")
+   return redirect(url_for("doctor.profile"))
+  try:
    exp=int(f.get("experience_years",0));
    if not 0<=exp<=100: raise ValueError()
    if exp!=session.get("profile",{}).get("experience_years"): body["experience_years"]=exp
@@ -105,7 +113,8 @@ def profile():
   except (ValueError,APIError) as e: flash(getattr(e,"message","Experience must be 0–100"),"error")
   return redirect(url_for("doctor.profile"))
  p,err=safe_call(get,"/doctors/profile"); p=p or {}; session["profile"]=p; session["doctor_name"]=(p.get("first_name","")+" "+p.get("last_name","")).strip() or "Doctor"; session["profile_status"]=p.get("profile_status","—")
- return page("My profile","profile",profile=p,error=err)
+ specialisations,spec_err=safe_call(get,"/doctors/specialisations")
+ return page("My profile","profile",profile=p,specialisations=specialisations if isinstance(specialisations,list) else [],error=err or spec_err)
 
 @bp.post("/profile/photo")
 @doctor_required

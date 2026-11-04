@@ -132,7 +132,87 @@ def get_profile(connection, doctor_id):
     elif profile:
         profile["profile_photo_display_url"] = None
 
+    if profile:
+        _, selected_specialisations = get_doctor_specialisations(connection, doctor_id)
+        profile["specialisations"] = selected_specialisations
+
     return profile
+
+
+def get_doctor_specialisations(connection, doctor_id):
+    """Return the active specialisation catalog and this doctor's selections."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT specialisation_id, specialisation_name, description
+            FROM specialisations
+            WHERE is_active = TRUE
+            ORDER BY specialisation_name
+            """
+        )
+        catalog = cursor.fetchall()
+        cursor.execute(
+            """
+            SELECT s.specialisation_id, s.specialisation_name
+            FROM doctor_specialisations ds
+            JOIN specialisations s
+              ON s.specialisation_id = ds.specialisation_id
+            WHERE ds.doctor_id = %s
+              AND s.is_active = TRUE
+            ORDER BY s.specialisation_name
+            """,
+            (doctor_id,),
+        )
+        selected = cursor.fetchall()
+    return catalog, selected
+
+
+def update_doctor_specialisations(connection, doctor_id, specialisation_ids):
+    """Replace the authenticated doctor's selected specialisations."""
+    if not isinstance(specialisation_ids, list):
+        return response(400, {"message": "specialisation_ids must be an array"})
+
+    try:
+        ids = sorted({int(value) for value in specialisation_ids})
+    except (TypeError, ValueError):
+        return response(400, {"message": "Every specialisation ID must be an integer"})
+
+    if any(value <= 0 for value in ids):
+        return response(400, {"message": "Specialisation IDs must be positive integers"})
+
+    with connection.cursor() as cursor:
+        if ids:
+            placeholders = ", ".join(["%s"] * len(ids))
+            cursor.execute(
+                f"""
+                SELECT specialisation_id
+                FROM specialisations
+                WHERE is_active = TRUE
+                  AND specialisation_id IN ({placeholders})
+                """,
+                ids,
+            )
+            valid_ids = {int(row["specialisation_id"]) for row in cursor.fetchall()}
+            if valid_ids != set(ids):
+                connection.rollback()
+                return response(400, {"message": "One or more selected specialisations are invalid or inactive"})
+
+        cursor.execute(
+            "DELETE FROM doctor_specialisations WHERE doctor_id = %s",
+            (doctor_id,),
+        )
+        if ids:
+            cursor.executemany(
+                """
+                INSERT INTO doctor_specialisations (doctor_id, specialisation_id)
+                VALUES (%s, %s)
+                """,
+                [(doctor_id, specialisation_id) for specialisation_id in ids],
+            )
+
+    connection.commit()
+    return None
+
 
 
 def list_doctors(connection):
@@ -164,10 +244,12 @@ def update_profile(connection, doctor_id, data):
         "experience_years",
         "profile_photo_url",
     }
+    specialisation_ids = data.get("specialisation_ids")
     updates = {key: value for key, value in data.items() if key in allowed}
 
-    if not updates:
+    if not updates and specialisation_ids is None:
         return response(400, {"message": "No valid profile fields provided"})
+
     for field in ("first_name", "last_name", "qualification", "profile_photo_url"):
         if field in updates and updates[field] is not None and not isinstance(updates[field], str):
             return response(400, {"message": f"{field} must be a string"})
@@ -181,29 +263,68 @@ def update_profile(connection, doctor_id, data):
         except (TypeError, ValueError):
             return response(400, {"message": "experience_years must be between 0 and 100"})
 
-    columns = ", ".join(f"{column} = %s" for column in updates)
+    # Validate all selected specialisations before changing profile data.
+    if specialisation_ids is not None:
+        if not isinstance(specialisation_ids, list):
+            return response(400, {"message": "specialisation_ids must be an array"})
+        try:
+            ids = sorted({int(value) for value in specialisation_ids})
+        except (TypeError, ValueError):
+            return response(400, {"message": "Every specialisation ID must be an integer"})
+        if any(value <= 0 for value in ids):
+            return response(400, {"message": "Specialisation IDs must be positive integers"})
+        if ids:
+            placeholders = ", ".join(["%s"] * len(ids))
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT specialisation_id
+                    FROM specialisations
+                    WHERE is_active = TRUE
+                      AND specialisation_id IN ({placeholders})
+                    """,
+                    ids,
+                )
+                valid_ids = {int(row["specialisation_id"]) for row in cursor.fetchall()}
+            if valid_ids != set(ids):
+                return response(400, {"message": "One or more selected specialisations are invalid or inactive"})
+    else:
+        ids = None
 
     with connection.cursor() as cursor:
-        cursor.execute(
-            f"""
-            UPDATE doctors
-            SET {columns}, updated_at = CURRENT_TIMESTAMP(3)
-            WHERE doctor_id = %s
-            """,
-            list(updates.values()) + [doctor_id],
-        )
+        cursor.execute("SELECT doctor_id FROM doctors WHERE doctor_id = %s", (doctor_id,))
+        if not cursor.fetchone():
+            connection.rollback()
+            return response(404, {"message": "Doctor profile not found"})
 
-        if cursor.rowcount == 0:
+        if updates:
+            columns = ", ".join(f"{column} = %s" for column in updates)
             cursor.execute(
-                "SELECT doctor_id FROM doctors WHERE doctor_id = %s",
+                f"""
+                UPDATE doctors
+                SET {columns}, updated_at = CURRENT_TIMESTAMP(3)
+                WHERE doctor_id = %s
+                """,
+                list(updates.values()) + [doctor_id],
+            )
+
+        if ids is not None:
+            cursor.execute(
+                "DELETE FROM doctor_specialisations WHERE doctor_id = %s",
                 (doctor_id,),
             )
-            if not cursor.fetchone():
-                connection.rollback()
-                return response(404, {"message": "Doctor profile not found"})
+            if ids:
+                cursor.executemany(
+                    """
+                    INSERT INTO doctor_specialisations (doctor_id, specialisation_id)
+                    VALUES (%s, %s)
+                    """,
+                    [(doctor_id, specialisation_id) for specialisation_id in ids],
+                )
 
     connection.commit()
     return response(200, {"message": "Doctor profile updated"})
+
 
 
 def consultation_types(connection, doctor_id, method, data, item_id=None):
@@ -754,7 +875,7 @@ def lambda_handler(event, context):
 
         if method == "GET" and (
             request_path == "/doctors"
-            or (len(parts) == 2 and parts[0] == "doctors" and parts[1] not in {"profile", "photo", "schedule", "availability", "blackouts", "consultation-types", "appointments", "slots"})
+            or (len(parts) == 2 and parts[0] == "doctors" and parts[1] not in {"profile", "photo", "schedule", "availability", "blackouts", "consultation-types", "appointments", "slots", "specialisations"})
         ):
             if role not in {"patient", "doctor", "admin"}:
                 return response(403, {"message": "Valid account role required"})
@@ -780,6 +901,10 @@ def lambda_handler(event, context):
             doctor_id = doctor_id_from_auth(connection, identity)
             if not doctor_id:
                 return response(404, {"message": "Doctor profile not found"})
+
+            if request_path == "/doctors/specialisations" and method == "GET":
+                catalog, _ = get_doctor_specialisations(connection, doctor_id)
+                return response(200, catalog)
 
             # /doctors/profile refers to the authenticated doctor's own profile.
             if request_path == "/doctors/profile" and method == "GET":
