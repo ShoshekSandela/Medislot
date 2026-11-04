@@ -1,7 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: MediSlot Data Stack - RDS MySQL, DynamoDB and S3
+
+Description: MediSlot Data Stack - RDS MySQL, DynamoDB and private S3 bucket
 
 Parameters:
+
   Environment:
     Type: String
     Default: dev
@@ -12,286 +14,472 @@ Parameters:
     Description: Deployment environment
 
   VpcId:
-    Type: AWS::EC2::VPC::Id
+    Type: String
     Description: VPC ID created by the Network Stack
 
   PrivateDatabaseSubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
-    Description: Private database subnet IDs created by the Network Stack
+    Type: CommaDelimitedList
+    Description: Two private database subnet IDs created by the Network Stack
 
   ApplicationSecurityGroupId:
-    Type: AWS::EC2::SecurityGroup::Id
+    Type: String
     Description: Application security group ID created by the Network Stack
+
+
+Conditions:
+
+  IsProduction: !Equals [!Ref Environment, prod]
+
 
 Resources:
 
-  # RDS Security Group
+  # =========================================================
+  # DATABASE SECURITY GROUP
+  # =========================================================
+
   DatabaseSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow MySQL access from MediSlot application
-      GroupName: !Sub medislot-${Environment}-database-sg
+      GroupDescription: Allow MySQL access from MediSlot application security group
       VpcId: !Ref VpcId
+
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 3306
           ToPort: 3306
           SourceSecurityGroupId: !Ref ApplicationSecurityGroupId
+
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-database-sg
+
         - Key: Project
           Value: MediSlot
 
-  # RDS Subnet Group
+
+  # =========================================================
+  # RDS SUBNET GROUP
+  # =========================================================
+
   DatabaseSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
       DBSubnetGroupDescription: MediSlot private database subnets
+
       SubnetIds: !Ref PrivateDatabaseSubnetIds
+
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-database-subnet-group
+
         - Key: Project
           Value: MediSlot
 
-  # RDS MySQL Database
+
+  # =========================================================
+  # RDS MYSQL DATABASE
+  # =========================================================
+
   MySQLDatabase:
     Type: AWS::RDS::DBInstance
     Properties:
+
       DBInstanceIdentifier: !Sub medislot-${Environment}-mysql
+
       Engine: mysql
       EngineVersion: '8.0'
+
       DBInstanceClass: db.t3.micro
+
       AllocatedStorage: 20
       StorageType: gp3
+
       StorageEncrypted: true
-      KmsKeyId: !Sub arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:alias/aws/rds
+
       DBName: medislot
+
       MasterUsername: medislotadmin
+
+      # AWS automatically manages the database password
+      # in Secrets Manager
       ManageMasterUserPassword: true
+
       DBSubnetGroupName: !Ref DatabaseSubnetGroup
+
       VPCSecurityGroups:
         - !GetAtt DatabaseSecurityGroup.GroupId
+
       PubliclyAccessible: false
+
       BackupRetentionPeriod: 1
+
       AutoMinorVersionUpgrade: true
+
+      DeletionProtection: !If
+        - IsProduction
+        - true
+        - false
+
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-mysql
+
         - Key: Project
           Value: MediSlot
+
         - Key: Environment
           Value: !Ref Environment
 
-  # DynamoDB Slots Table
+
+  # =========================================================
+  # DYNAMODB - SLOTS
+  # =========================================================
+
   SlotsTable:
     Type: AWS::DynamoDB::Table
     Properties:
+
       TableName: !Sub medislot-${Environment}-slots
+
       BillingMode: PAY_PER_REQUEST
+
       AttributeDefinitions:
+
         - AttributeName: slotId
           AttributeType: S
+
         - AttributeName: doctorId
           AttributeType: S
+
         - AttributeName: slotTime
           AttributeType: S
+
       KeySchema:
+
         - AttributeName: slotId
           KeyType: HASH
+
       GlobalSecondaryIndexes:
+
         - IndexName: doctor-time-index
+
           KeySchema:
+
             - AttributeName: doctorId
               KeyType: HASH
+
             - AttributeName: slotTime
               KeyType: RANGE
+
           Projection:
             ProjectionType: ALL
+
       SSESpecification:
         SSEEnabled: true
+
       Tags:
         - Key: Project
           Value: MediSlot
 
-  # DynamoDB Idempotency Table
+
+  # =========================================================
+  # DYNAMODB - IDEMPOTENCY
+  # =========================================================
+
   IdempotencyTable:
     Type: AWS::DynamoDB::Table
     Properties:
+
       TableName: !Sub medislot-${Environment}-idempotency
+
       BillingMode: PAY_PER_REQUEST
+
       AttributeDefinitions:
+
         - AttributeName: idemKey
           AttributeType: S
+
       KeySchema:
+
         - AttributeName: idemKey
           KeyType: HASH
+
       TimeToLiveSpecification:
+
         AttributeName: expiresAt
         Enabled: true
+
       SSESpecification:
         SSEEnabled: true
+
       Tags:
         - Key: Project
           Value: MediSlot
 
-  # DynamoDB Waitlist Table
+
+  # =========================================================
+  # DYNAMODB - WAITLIST
+  # =========================================================
+
   WaitlistTable:
     Type: AWS::DynamoDB::Table
     Properties:
+
       TableName: !Sub medislot-${Environment}-waitlist
+
       BillingMode: PAY_PER_REQUEST
+
       AttributeDefinitions:
+
         - AttributeName: slotId
           AttributeType: S
+
         - AttributeName: patientId
           AttributeType: S
+
       KeySchema:
+
         - AttributeName: slotId
           KeyType: HASH
+
         - AttributeName: patientId
           KeyType: RANGE
+
       SSESpecification:
         SSEEnabled: true
+
       Tags:
         - Key: Project
           Value: MediSlot
 
-  # DynamoDB Hold Offers Table
+
+  # =========================================================
+  # DYNAMODB - HOLD OFFERS
+  # =========================================================
+
   HoldOffersTable:
     Type: AWS::DynamoDB::Table
     Properties:
+
       TableName: !Sub medislot-${Environment}-hold-offers
+
       BillingMode: PAY_PER_REQUEST
+
       AttributeDefinitions:
+
         - AttributeName: offerId
           AttributeType: S
+
         - AttributeName: slotId
           AttributeType: S
+
         - AttributeName: offerStatus
           AttributeType: S
+
       KeySchema:
+
         - AttributeName: offerId
           KeyType: HASH
+
       GlobalSecondaryIndexes:
+
         - IndexName: slot-status-index
+
           KeySchema:
+
             - AttributeName: slotId
               KeyType: HASH
+
             - AttributeName: offerStatus
               KeyType: RANGE
+
           Projection:
             ProjectionType: ALL
+
       TimeToLiveSpecification:
+
         AttributeName: expiresAt
         Enabled: true
+
       SSESpecification:
         SSEEnabled: true
+
       Tags:
         - Key: Project
           Value: MediSlot
 
-  # DynamoDB Authentication Tokens Table
+
+  # =========================================================
+  # DYNAMODB - AUTH TOKENS
+  # =========================================================
+
   AuthTokensTable:
     Type: AWS::DynamoDB::Table
     Properties:
+
       TableName: !Sub medislot-${Environment}-auth-tokens
+
       BillingMode: PAY_PER_REQUEST
+
       AttributeDefinitions:
+
         - AttributeName: tokenId
           AttributeType: S
+
       KeySchema:
+
         - AttributeName: tokenId
           KeyType: HASH
+
       TimeToLiveSpecification:
+
         AttributeName: expiresAt
         Enabled: true
+
       SSESpecification:
         SSEEnabled: true
+
       Tags:
         - Key: Project
           Value: MediSlot
 
-  # DynamoDB Dispatch Log Table
+
+  # =========================================================
+  # DYNAMODB - DISPATCH LOG
+  # =========================================================
+
   DispatchLogTable:
     Type: AWS::DynamoDB::Table
     Properties:
+
       TableName: !Sub medislot-${Environment}-dispatch-log
+
       BillingMode: PAY_PER_REQUEST
+
       AttributeDefinitions:
+
         - AttributeName: dispatchId
           AttributeType: S
+
       KeySchema:
+
         - AttributeName: dispatchId
           KeyType: HASH
+
       TimeToLiveSpecification:
+
         AttributeName: expiresAt
         Enabled: true
+
       SSESpecification:
         SSEEnabled: true
+
       Tags:
         - Key: Project
           Value: MediSlot
 
-  # Private S3 Bucket
+
+  # =========================================================
+  # S3 - APPLICATION FILES / PROFILE PHOTOS
+  # =========================================================
+
   ApplicationFilesBucket:
     Type: AWS::S3::Bucket
     Properties:
+
       BucketEncryption:
+
         ServerSideEncryptionConfiguration:
+
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+
       PublicAccessBlockConfiguration:
+
         BlockPublicAcls: true
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+
       Tags:
+
         - Key: Name
           Value: !Sub medislot-${Environment}-files
+
         - Key: Project
           Value: MediSlot
 
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
 Outputs:
+
+  VpcId:
+    Description: VPC ID used by the data stack
+    Value: !Ref VpcId
+
 
   DatabaseEndpoint:
     Description: RDS MySQL endpoint address
     Value: !GetAtt MySQLDatabase.Endpoint.Address
 
+
   DatabasePort:
     Description: RDS MySQL port
     Value: !GetAtt MySQLDatabase.Endpoint.Port
+
 
   DatabaseName:
     Description: MySQL database name
     Value: medislot
 
+
   DatabaseSecretArn:
     Description: Secrets Manager ARN for the RDS master credentials
     Value: !GetAtt MySQLDatabase.MasterUserSecret.SecretArn
+
 
   DatabaseSecurityGroupId:
     Description: Database security group ID
     Value: !GetAtt DatabaseSecurityGroup.GroupId
 
+
   SlotsTableName:
+    Description: DynamoDB slots table name
     Value: !Ref SlotsTable
 
+
   IdempotencyTableName:
+    Description: DynamoDB idempotency table name
     Value: !Ref IdempotencyTable
 
+
   WaitlistTableName:
+    Description: DynamoDB waitlist table name
     Value: !Ref WaitlistTable
 
+
   HoldOffersTableName:
+    Description: DynamoDB hold offers table name
     Value: !Ref HoldOffersTable
 
+
   AuthTokensTableName:
+    Description: DynamoDB authentication tokens table name
     Value: !Ref AuthTokensTable
 
+
   DispatchLogTableName:
+    Description: DynamoDB dispatch log table name
     Value: !Ref DispatchLogTable
 
+
   ApplicationFilesBucketName:
+    Description: Private S3 application files bucket name
     Value: !Ref ApplicationFilesBucket
+
+  ApplicationFilesBucketArn:
+    Description: Private S3 application files bucket ARN
+    Value: !GetAtt ApplicationFilesBucket.Arn

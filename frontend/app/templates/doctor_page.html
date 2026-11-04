@@ -1,0 +1,186 @@
+{% extends 'base.html' %}{% block body %}<style>
+.profile-photo-avatar{position:relative;overflow:hidden;padding:0}
+.profile-photo-avatar img{width:100%;height:100%;object-fit:cover;display:block;border-radius:50%}
+.profile-photo-avatar .avatar-fallback{width:100%;height:100%;align-items:center;justify-content:center}
+</style>
+<div class="app-shell"><aside class="sidebar" id="sidebar"><a class="brand" href="{{ url_for('doctor.dashboard') }}"><span class="brand-mark">✚</span> MediSlot</a><div class="nav-label">WORKSPACE</div><nav><a class="{{ 'active' if active=='dashboard' else '' }}" href="{{ url_for('doctor.dashboard') }}">⌂ <span>Overview</span></a><a class="{{ 'active' if active=='schedule' else '' }}" href="{{ url_for('doctor.schedule') }}">▦ <span>Schedule</span></a><a class="{{ 'active' if active=='profile' else '' }}" href="{{ url_for('doctor.profile') }}">◉ <span>My profile</span></a><a class="{{ 'active' if active=='types' else '' }}" href="{{ url_for('doctor.consultation_types') }}">▤ <span>Consultation types</span></a><a class="{{ 'active' if active=='availability' else '' }}" href="{{ url_for('doctor.availability') }}">◷ <span>Availability</span></a><a class="{{ 'active' if active=='blackouts' else '' }}" href="{{ url_for('doctor.blackouts') }}">▣ <span>Blackouts</span></a><a class="{{ 'active' if active=='appointments' else '' }}" href="{{ url_for('doctor.appointments') }}">♡ <span>Appointments</span></a></nav><div class="sidebar-bottom"><div class="secure-note">⌑ <span>Your workspace is private<br><small>Protected doctor access</small></span></div><form method="post" action="{{ url_for('doctor.logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="nav-logout">↪ <span>Sign out</span></button></form></div></aside><main class="main-area"><header class="topbar"><button class="icon-button mobile-menu" aria-label="Open navigation" data-menu>☰</button><div class="breadcrumbs">Doctor workspace <span>/</span> {{ title }}</div><div class="top-actions"><button class="icon-button" data-theme-toggle aria-label="Toggle theme">◐</button><div class="user-chip"><div class="avatar small profile-photo-avatar">{% set header_photo=session.get('profile',{}).get('profile_photo_display_url') %}{% if header_photo %}<img src="{{ header_photo }}" alt="Doctor profile photo" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"><span class="avatar-fallback" style="display:none">{{ doctor_name[:1]|upper }}</span>{% else %}{{ doctor_name[:1]|upper }}{% endif %}</div><div><strong>{{ doctor_name }}</strong><small>{{ profile_status }}</small></div></div></div></header><div class="content"><div class="page-heading"><div><span class="eyebrow">DOCTOR</span><h1>{{ title }}</h1><p>{% if active=='availability' or active=='blackouts' or active=='schedule' %}All times IST · Asia/Kolkata{% else %}Manage your MediSlot workspace{% endif %}</p></div></div>
+{% if active=='dashboard' %}<div class="stat-grid">{% for stat in stats %}<article class="panel stat-card"><span>{{ stat.label }}</span><strong>{{ stat.value }}</strong><small>{{ stat.note }}</small></article>{% endfor %}</div><div class="dashboard-grid"><section class="panel"><h2>Next upcoming patient</h2>{% if next_patient %}<div class="next-patient"><div class="avatar large">{{ next_patient.patient_first_name[:1]|upper }}{{ next_patient.patient_last_name[:1]|upper }}</div><div><strong>{{ next_patient.patient_first_name }} {{ next_patient.patient_last_name }}</strong><p class="muted">{{ next_patient.start_at_ist }} · {{ next_patient.patient_phone or 'Phone unavailable' }}</p></div></div>{% else %}<p class="muted">No upcoming booked patient in today's schedule.</p>{% endif %}</section><section class="panel"><h2>Practice snapshot</h2><p>Active availability windows: <strong>{{ active_windows if active_windows is not none else 'Unavailable' }}</strong></p><p>Next blackout: <strong>{{ next_blackout or 'None scheduled' }}</strong></p><a class="btn secondary small-btn" href="{{ url_for('doctor.availability') }}">Manage availability</a></section></div>{% if overview_errors %}<div class="error-card">Some overview data could not be loaded: {{ overview_errors|join('; ') }}</div>{% endif %}{% elif active=='profile' %}
+<style>
+.profile-photo-avatar{position:relative;overflow:hidden;padding:0}
+.profile-photo-avatar img{width:100%;height:100%;object-fit:cover;display:block;border-radius:50%}
+.profile-photo-avatar .avatar-fallback{width:100%;height:100%;align-items:center;justify-content:center}
+.profile-specialisations{grid-column:1/-1;margin-top:4px;min-width:0}
+.profile-specialisations h3{margin:0 0 10px}
+.specialisation-dropdown{position:relative;margin-top:0}
+.specialisation-dropdown summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:58px;padding:12px 16px;border:1px solid var(--border,#38505a);border-radius:10px;background:var(--surface-2,#20343d);font-weight:600}
+.specialisation-dropdown summary::-webkit-details-marker{display:none}
+.specialisation-dropdown summary:after{content:"⌄";font-size:1.25rem;flex:0 0 auto;transition:transform .15s}
+.specialisation-dropdown[open] summary:after{transform:rotate(180deg)}
+.specialisation-summary-content{display:flex;align-items:center;flex-wrap:wrap;gap:7px;min-width:0;flex:1}
+.specialisation-summary-title{font-weight:600}
+.specialisation-selected{display:flex;flex-wrap:wrap;gap:6px}
+.specialisation-chip{display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;background:rgba(75,197,189,.16);border:1px solid rgba(75,197,189,.35);color:var(--text,#eaf3f5);font-size:.82rem;font-weight:600}
+.specialisation-count{font-size:.82rem;color:var(--muted,#9fb2bd);font-weight:500;white-space:nowrap}
+.specialisation-checklist{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;padding:14px;margin-top:7px;border:1px solid var(--border,#38505a);border-radius:10px;background:var(--surface,#172a32);max-height:260px;overflow:auto}
+.specialisation-checklist label{display:flex;align-items:center;gap:9px;padding:10px 12px;border:1px solid var(--border,#38505a);border-radius:8px;cursor:pointer}
+.specialisation-checklist label:has(input:checked){border-color:var(--accent,#4bc5bd);background:rgba(75,197,189,.10)}
+.specialisation-checklist input{accent-color:var(--accent,#4bc5bd)}
+.specialisation-description{font-size:.9rem;color:var(--muted,#9fb2bd);margin:9px 0 0;line-height:1.5}
+@media(max-width:700px){.specialisation-checklist{grid-template-columns:1fr}}
+</style>
+<section class="panel profile-panel">
+ <div class="profile-head">
+  <div class="avatar large profile-photo-avatar">
+   {% if profile.profile_photo_display_url %}
+    <img src="{{ profile.profile_photo_display_url }}" alt="Profile photo of {{ profile.first_name or 'Doctor' }}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+    <span class="avatar-fallback" style="display:none">{{ (profile.first_name or 'D')[:1]|upper }}{{ (profile.last_name or '')[:1]|upper }}</span>
+   {% else %}
+    {{ (profile.first_name or 'D')[:1]|upper }}{{ (profile.last_name or '')[:1]|upper }}
+   {% endif %}
+  </div>
+  <div>
+   <h2>{{ profile.first_name or 'Doctor' }} {{ profile.last_name or '' }}</h2>
+   <p class="muted">{{ profile.qualification or 'Professional profile' }}</p>
+   {% if profile.profile_photo_url %}<span class="status-pill good">✓ Photo uploaded</span>{% endif %}
+  </div>
+ </div>
+ <form method="post" class="form-grid">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label>First name<input name="first_name" maxlength="100" value="{{ profile.first_name or '' }}" required></label>
+  <label>Last name<input name="last_name" maxlength="100" value="{{ profile.last_name or '' }}"></label>
+  <label>Qualification<input name="qualification" value="{{ profile.qualification or '' }}"></label>
+  <label>Experience (years)<input type="number" name="experience_years" min="0" max="100" value="{{ profile.experience_years or 0 }}"></label>
+  <label>Registration number<input value="{{ profile.registration_number or '' }}" readonly></label>
+  <label>Profile status<input value="{{ profile.profile_status or '—' }}" readonly></label>
+
+  {% set selected_specialisation_ids = (profile.specialisations or [])|map(attribute='specialisation_id')|map('int')|list %}
+  <div class="profile-specialisations">
+   <h3>Specialisations</h3>
+   <details class="specialisation-dropdown">
+    <summary>
+     <span class="specialisation-summary-content">
+      {% if profile.specialisations %}
+       <span class="specialisation-selected">
+        {% for saved in profile.specialisations %}
+         <span class="specialisation-chip">{{ saved.specialisation_name or saved.name or ('Specialisation #' ~ saved.specialisation_id) }}</span>
+        {% endfor %}
+       </span>
+      {% else %}
+       <span class="specialisation-summary-title">Select specialisations</span>
+      {% endif %}
+     </span>
+     <span class="specialisation-count">{{ selected_specialisation_ids|length }} selected</span>
+    </summary>
+    <div class="specialisation-checklist">
+     {% for spec in specialisations %}
+      <label>
+       <input type="checkbox" name="specialisation_ids" value="{{ spec.specialisation_id }}" {% if spec.specialisation_id|int in selected_specialisation_ids %}checked{% endif %}>
+       <span>{{ spec.specialisation_name }}</span>
+      </label>
+     {% else %}
+      <p class="muted">No active specialisations are configured. Add them to the specialisations table in MySQL.</p>
+     {% endfor %}
+    </div>
+   </details>
+   <p class="specialisation-description">Choose one or more specialisations that describe your medical practice. Your selected specialisations will be saved to your doctor profile and displayed here after you click Save changes.</p>
+  </div>
+  <div class="form-actions"><button class="btn primary">Save changes</button></div>
+ </form>
+</section>
+<section class="panel">
+ <h2>Profile photo</h2>
+ <p class="muted">JPEG, PNG or WebP · Maximum 5 MB. Your uploaded photo appears above after a successful upload.</p>
+ <form method="post" action="{{ url_for('doctor.photo') }}" enctype="multipart/form-data">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <div class="upload-row"><input type="file" name="photo" accept="image/jpeg,image/png,image/webp" required><button class="btn secondary">Upload photo</button></div>
+ </form>
+</section>
+{% elif active=='types' %}<section class="toolbar"><p class="muted">Shared consultation catalog · not owned per doctor</p><button class="btn primary" data-modal-open="type-modal">＋ Add consultation type</button></section><div class="card-grid">{% for t in types %}<article class="panel type-card"><div class="card-top"><span class="status-pill {{ 'good' if as_bool(t.is_active) else 'muted-pill' }}">{{ 'Active' if as_bool(t.is_active) else 'Inactive' }}</span><span class="muted">#{{ t.consultation_type_id }}</span></div><h2>{{ t.type_name }}</h2><p class="muted">{{ t.description or 'No description' }}</p><div class="metric-row"><div><strong>{{ t.duration_minutes }} min</strong><small>Duration</small></div><div><strong>{{ money(t.consultation_fee) }}</strong><small>Fee</small></div><div><strong>{{ t.capacity }}</strong><small>Capacity</small></div></div><div class="card-actions"><button class="btn secondary small-btn" data-edit-type='{{ t|tojson }}'>Edit</button>{% if as_bool(t.is_active) %}<form method="post" action="{{ url_for('doctor.deactivate_type',ident=t.consultation_type_id) }}" data-confirm="Deactivate this consultation type?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn danger-ghost small-btn">Deactivate</button></form>{% endif %}</div></article>{% else %}<div class="empty-state"><div class="empty-icon">▤</div><h3>No consultation types returned</h3><p>Check the API response or create a type if the catalog is empty.</p></div>{% endfor %}</div><dialog class="modal" id="type-modal"><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="consultation_type_id" id="type-id"><div class="modal-head"><h2 id="type-modal-title">New consultation type</h2><button type="button" class="icon-button" data-modal-close>×</button></div><label>Type name<input name="type_name" id="type-name" required></label><div class="field-row"><label>Duration (minutes)<input type="number" name="duration_minutes" id="type-duration" min="1" required></label><label>Fee (₹)<input type="number" name="consultation_fee" id="type-fee" min="0" step="0.01" required></label></div><label id="capacity-wrap">Capacity<input type="number" name="capacity" id="type-capacity" min="1" value="1"></label><label>Description<textarea name="description" id="type-description"></textarea></label><label class="check-label"><input type="checkbox" name="is_active" id="type-active" checked> Active</label><div class="modal-actions"><button type="button" class="btn secondary" data-modal-close>Cancel</button><button class="btn primary">Save type</button></div></form></dialog>
+{% elif active=='availability' %}<div class="info-banner">ⓘ Availability changes are reflected in generated slots after the next daily slot-materializer run (rolling 30 days). They are not instant.</div><div class="toolbar"><p class="muted">Weekly windows · Sunday is day 0</p><button class="btn primary" data-modal-open="availability-modal">＋ Add window</button></div><div class="week-grid">{% for day in days %}<section class="week-day"><h3>{{ day[:3] }}</h3>{% for a in availability if a.day_of_week|int==loop.index0 %}{% set t=types|selectattr('consultation_type_id','equalto',a.consultation_type_id)|first %}<div class="availability-block"><strong>{{ t.type_name if t else 'Type #'~a.consultation_type_id }}</strong><span>{{ time_display(a.start_time) }} – {{ time_display(a.end_time) }}</span><small>Hospital {{ a.hospital_id }} · {{ 'Active' if as_bool(a.is_active) else 'Inactive' }}</small><div class="inline-actions"><button type="button" class="text-button" data-edit-availability='{{ a|tojson }}'>Edit</button><form method="post" action="{{ url_for('doctor.delete_availability',ident=a.availability_id) }}" data-confirm="Delete this availability window?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="text-button danger-text">Delete</button></form></div></div>{% else %}<p class="day-empty">No windows</p>{% endfor %}</section>{% endfor %}</div><dialog class="modal" id="availability-modal"><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="availability_id" id="availability-id"><div class="modal-head"><h2 id="availability-modal-title">Add availability window</h2><button type="button" class="icon-button" data-modal-close>×</button></div><label>Hospital ID<input type="number" name="hospital_id" min="1" value="{{ hospitals[0] if hospitals else '' }}" required><small>Use the hospital ID you registered with.</small></label><label>Consultation type<select name="consultation_type_id" required>{% for t in types if as_bool(t.is_active) %}<option value="{{ t.consultation_type_id }}">{{ t.type_name }}</option>{% endfor %}</select></label><label>Day<select name="day_of_week">{% for d in days %}<option value="{{ loop.index0 }}">{{ d }}</option>{% endfor %}</select></label><div class="field-row"><label>Start time<input type="time" name="start_time" required></label><label>End time<input type="time" name="end_time" required></label></div><div class="field-row"><label>Effective from<input type="date" name="effective_from" value="{{ today }}" required></label><label>Effective until (optional)<input type="date" name="effective_until"></label></div><label class="check-label"><input type="checkbox" name="is_active" checked> Active</label><div class="modal-actions"><button type="button" class="btn secondary" data-modal-close>Cancel</button><button class="btn primary">Save window</button></div></form></dialog>
+{% elif active=='blackouts' %}<section class="panel"><h2>Add blackout</h2><form method="post" class="form-grid"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Hospital ID<input type="number" name="hospital_id" min="1" value="{{ hospitals[0] if hospitals else '' }}" required><small>Use a hospital ID assigned to you.</small></label><label>Reason (optional)<input name="reason" maxlength="255"></label><label>Start date<input type="date" name="start_date" required></label><label>End date<input type="date" name="end_date"></label><label class="check-label"><input type="checkbox" name="full_day" data-full-day> Full day(s)</label><div class="field-row time-fields"><label>Start time<input type="time" name="start_time" value="09:00"></label><label>End time<input type="time" name="end_time" value="17:00"></label></div><div class="form-actions"><button class="btn primary">Add blackout</button></div></form></section><div class="panel-list">{% for b in blackouts %}<article class="panel blackout-row {{ 'past' if b.end_at_ist < now_ist else '' }}"><div><h3>{{ b.reason or 'Unavailable' }}</h3><p>{{ b.start_at_ist }} → {{ b.end_at_ist }}</p><small>Hospital {{ b.hospital_id }}</small></div><form method="post" action="{{ url_for('doctor.delete_blackout',ident=b.blackout_id) }}" data-confirm="Delete this blackout?"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn danger-ghost small-btn">Delete</button></form></article>{% else %}<div class="empty-state"><div class="empty-icon">▣</div><h3>No blackouts scheduled</h3><p>Add a blackout to suppress generated slots during time away.</p></div>{% endfor %}</div>
+{% elif active=='schedule' %}
+<section class="schedule-toolbar-panel">
+ <div class="schedule-toolbar-top">
+  <div class="segmented"><a class="{{ 'selected' if view=='day' else '' }}" href="{{ url_for('doctor.schedule',view='day',date=day) }}">Day</a><a class="{{ 'selected' if view=='week' else '' }}" href="{{ url_for('doctor.schedule',view='week',date=day) }}">Week</a></div>
+  <form method="get" class="schedule-date-nav">
+   <input type="hidden" name="view" value="{{ view }}">
+   <a class="schedule-nav-btn" href="{{ url_for('doctor.schedule',view=view,date=(day|to_date_shift(-1 if view=='day' else -7))) }}">‹</a>
+   <input type="date" name="date" value="{{ day }}">
+   <button class="schedule-nav-btn schedule-go">Go</button>
+   <a class="schedule-today" href="{{ url_for('doctor.schedule',view=view) }}">Today</a>
+   <a class="schedule-nav-btn" href="{{ url_for('doctor.schedule',view=view,date=(day|to_date_shift(1 if view=='day' else 7))) }}">›</a>
+   <button class="schedule-nav-btn" type="submit" name="refresh" value="1" title="Refresh schedule">↻</button>
+  </form>
+ </div>
+ {% if view=='day' %}
+ <div class="schedule-stats">
+  <div><span>Total Slots</span><strong>{{ schedule_stats.total }}</strong></div>
+  <div><span>Available</span><strong class="stat-available">{{ schedule_stats.available }}</strong></div>
+  <div><span>Booked</span><strong class="stat-booked">{{ schedule_stats.booked }}</strong></div>
+  <div><span>Inactive</span><strong class="stat-inactive">{{ schedule_stats.inactive }}</strong></div>
+ </div>
+ {% endif %}
+</section>
+{% if errors %}<div class="error-card">Some schedule requests failed: {{ errors|map(attribute='message')|join('; ') }}</div>{% endif %}
+{% if view=='week' %}
+<div class="schedule-week-modern">
+ {% for d in dates %}
+  {% set sch=schedules.get(d,{}) %}
+  <section class="schedule-week-day">
+   <h3>{{ d }}</h3>
+   {% for s in sch.get('slots',[]) %}
+    {% set booked=s.bookedCount|int %}
+    {% set capacity=s.capacity|int %}
+    {% set blackout=s.isBlackout %}
+    <article class="week-slot {{ 'blackout' if blackout else ('slot-full' if capacity and booked>=capacity else ('slot-partial' if booked>0 else 'slot-open')) }}">
+     <strong>{{ time_display(s.slotTime[11:]) }} – {{ time_display(s.endTime[11:]) if s.endTime else '' }}</strong>
+     <small>{{ type_map.get(s.consultationTypeId|string,{}).get('type_name','Consultation') }}</small>
+     <span>{{ 'Blackout' if blackout else ('Fully booked' if capacity and booked>=capacity else ('Partially booked' if booked>0 else 'Open')) }} · {{ booked }}/{{ capacity }}</span>
+    </article>
+   {% else %}<p class="day-empty">No slots</p>{% endfor %}
+   {% for b in sch.get('blackouts',[]) %}
+    <article class="week-slot blackout"><strong>{{ time_display((b.start_at_ist|string)[11:19]) }} – {{ time_display((b.end_at_ist|string)[11:19]) }}</strong><small>{{ b.reason or 'Doctor unavailable' }}</small><span>Blackout</span></article>
+   {% endfor %}
+  </section>
+ {% endfor %}
+</div>
+{% else %}
+{% set sch=schedules.get(day,{}) %}
+{% set slots=sch.get('slots',[]) %}
+{% set appts=sch.get('appointments',[]) %}
+{% set blackouts=sch.get('blackouts',[]) %}
+<section class="schedule-day-panel">
+ <div class="schedule-day-heading"><div><h2>Schedule for {{ day }}</h2><p>Slot capacities and bookings for the selected clinical day</p></div></div>
+ <div class="schedule-card-grid">
+  {% for s in slots|sort(attribute='slotTime') %}
+   {% set booked=s.bookedCount|int %}
+   {% set capacity=s.capacity|int %}
+   {% set is_blackout=s.isBlackout %}
+   {% set status='Blackout' if is_blackout else ('Fully booked' if capacity and booked>=capacity else ('Partially booked' if booked>0 else 'Open')) %}
+   {% set status_class='blackout' if is_blackout else ('slot-full' if capacity and booked>=capacity else ('slot-partial' if booked>0 else 'slot-open')) %}
+   {% set typ=type_map.get(s.consultationTypeId|string,{}) %}
+   {% set booked_patients=appts|selectattr('slot_id','equalto',s.slotId)|list %}
+   <article class="schedule-slot-card {{ status_class }}">
+    <div class="schedule-slot-top"><h3>{{ time_display(s.slotTime[11:]) }} – {{ time_display(s.endTime[11:]) if s.endTime else '' }}</h3><span class="schedule-status">{{ status }}</span></div>
+    <p class="schedule-consultation">{{ typ.get('type_name','Consultation') }}</p>
+    <div class="schedule-capacity"><span>Capacity</span><strong>{{ booked }} / {{ capacity }} booked</strong></div>
+    <div class="schedule-progress"><span style="width:{{ (booked / capacity * 100) if capacity else 0 }}%"></span></div>
+    {% if booked_patients %}<details class="schedule-patients"><summary>{{ booked_patients|length }} booked patient(s)</summary>{% for p in booked_patients %}<div class="patient-line"><strong>{{ p.patient_first_name }} {{ p.patient_last_name }}</strong><span>{{ p.patient_phone or 'Phone unavailable' }}</span></div>{% endfor %}</details>{% endif %}
+   </article>
+  {% endfor %}
+  {% for b in blackouts %}
+   <article class="schedule-slot-card blackout">
+    <div class="schedule-slot-top"><h3>{{ time_display((b.start_at_ist|string)[11:]) }} – {{ time_display((b.end_at_ist|string)[11:]) }}</h3><span class="schedule-status">Blackout</span></div>
+    <p class="schedule-consultation">{{ b.reason or 'Doctor unavailable' }}</p>
+    <div class="schedule-capacity"><span>Hospital {{ b.hospital_id }}</span><strong>Unavailable</strong></div>
+    <div class="schedule-progress"><span style="width:100%"></span></div>
+   </article>
+  {% endfor %}
+ </div>
+ {% if not slots and not blackouts %}
+ <div class="schedule-empty"><div class="empty-icon">◷</div><h3>No slots for this date</h3><p>There are no generated slots or blackout windows for this date. Slots are generated from active weekly availability by the Slot Materializer.</p><a class="btn secondary" href="{{ url_for('doctor.availability') }}">Manage availability</a></div>
+ {% endif %}
+</section>
+{% endif %}
+{% elif active=='appointments' %}<div class="empty-state"><div class="empty-icon">♡</div><h2>Appointments management</h2><p>Appointment listing and visit management are not available yet.</p><div class="disabled-actions"><button class="btn secondary" {% if not feature_flags.appointments %}disabled title="Not available yet"{% endif %}>Appointments list</button><button class="btn secondary" {% if not feature_flags.cancel_slot %}disabled title="Not available yet"{% endif %}>Cancel slot</button><button class="btn secondary" {% if not feature_flags.appointment_outcome %}disabled title="Not available yet"{% endif %}>Mark completed / no-show</button></div><p class="muted">These actions will become available when the appointment API is supported.</p></div>
+{% endif %}</div></main></div>{% endblock %}

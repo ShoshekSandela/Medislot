@@ -1,0 +1,7 @@
+Flask>=3.0,<4
+Flask-Session>=0.8,<1
+Flask-WTF>=1.2,<2
+requests>=2.32,<3
+gunicorn>=22,<24
+pytest>=8,<9
+tzdata>=2025.2
