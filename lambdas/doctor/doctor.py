@@ -492,6 +492,30 @@ def consultation_types(connection, doctor_id, method, data, item_id=None):
     return response(405, {"message": "Method not allowed"})
 
 
+def refresh_slots(connection, doctor_id, days=30):
+    """Generate this doctor's DynamoDB slots right after an availability change.
+
+    The daily scheduler still runs for everyone; this makes the doctor's own
+    change visible immediately. Failures are logged and never block the save.
+    """
+    try:
+        from lambdas.slot_materializer import slot_materializer as materializer
+
+        table_name = os.environ.get("SLOTS_TABLE_NAME")
+        if not table_name:
+            logger.error("SLOTS_TABLE_NAME is not configured; slots not refreshed")
+            return
+        table = dynamodb.Table(table_name)
+        start_day = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+        for offset in range(days):
+            materializer.materialize_day(
+                connection, table, start_day + timedelta(days=offset),
+                doctor_id=int(doctor_id),
+            )
+    except Exception:
+        logger.exception("Slot refresh failed for doctor_id=%s", doctor_id)
+
+
 def availability(connection, doctor_id, method, data, item_id=None):
     with connection.cursor() as cursor:
         if method == "GET":
@@ -567,6 +591,7 @@ def availability(connection, doctor_id, method, data, item_id=None):
                  data.get("effective_until"), bool(data.get("is_active", True))),
             )
             connection.commit()
+            refresh_slots(connection, doctor_id)
             return response(201, {
                 "message": "Availability created",
                 "availability_id": int(cursor.lastrowid),
@@ -605,6 +630,7 @@ def availability(connection, doctor_id, method, data, item_id=None):
                     connection.rollback()
                     return response(404, {"message": "Availability not found"})
             connection.commit()
+            refresh_slots(connection, doctor_id)
             return response(200, {"message": "Availability updated"})
 
         if method == "DELETE" and item_id:
@@ -620,6 +646,7 @@ def availability(connection, doctor_id, method, data, item_id=None):
                 connection.rollback()
                 return response(404, {"message": "Availability not found"})
             connection.commit()
+            refresh_slots(connection, doctor_id)
             return response(200, {"message": "Availability deleted"})
 
     return response(405, {"message": "Method not allowed"})

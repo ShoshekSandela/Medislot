@@ -97,7 +97,7 @@ def mysql_time_to_time(value):
     )
 
 
-def get_availability(connection, day_of_week, target_date):
+def get_availability(connection, day_of_week, target_date, doctor_id=None):
 
     sql = """
         SELECT
@@ -126,11 +126,14 @@ def get_availability(connection, day_of_week, target_date):
           )
     """
 
+    params = [day_of_week, target_date, target_date]
+
+    if doctor_id is not None:
+        sql += " AND da.doctor_id = %s"
+        params.append(int(doctor_id))
+
     with connection.cursor() as cursor:
-        cursor.execute(
-            sql,
-            (day_of_week, target_date, target_date)
-        )
+        cursor.execute(sql, params)
 
         return cursor.fetchall()
 
@@ -249,7 +252,7 @@ def create_slot(
         return "blackout" if blocked_by_blackout else "duplicate"
 
 
-def materialize_day(connection, slots_table, target_date):
+def materialize_day(connection, slots_table, target_date, doctor_id=None):
 
     # Python: Monday=0, Sunday=6.
     # Database: Sunday=0, Saturday=6.
@@ -258,7 +261,8 @@ def materialize_day(connection, slots_table, target_date):
     availability_records = get_availability(
         connection,
         day_of_week,
-        target_date
+        target_date,
+        doctor_id
     )
     logger.info(
         "Materializing date=%s day_of_week=%s availability_records=%s",

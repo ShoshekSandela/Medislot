@@ -151,6 +151,8 @@ Resources:
               - Effect: Allow
                 Action:
                   - dynamodb:Scan
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots'
 
@@ -234,6 +236,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - dynamodb:PutItem
+                  - dynamodb:UpdateItem
                 Resource:
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
 

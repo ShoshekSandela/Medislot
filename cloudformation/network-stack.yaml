@@ -179,6 +179,19 @@ Resources:
         - Key: Name
           Value: !Sub medislot-${Environment}-endpoint-sg
 
+  # Allow the dashboard EC2 instance to reach the interface endpoints too.
+  # Private DNS sends every instance in the VPC to these endpoints, so without
+  # this rule the EC2 server cannot call Secrets Manager or SSM.
+  EndpointIngressFromEC2:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref EndpointSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourceSecurityGroupId: !Ref EC2SecurityGroup
+      Description: HTTPS from dashboard EC2 to VPC endpoints
+
   # 12. S3 gateway endpoint
   S3Endpoint:
     Type: AWS::EC2::VPCEndpoint

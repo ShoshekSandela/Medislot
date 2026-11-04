@@ -213,7 +213,8 @@ def availability():
    if body["effective_until"] and body["effective_until"]<body["effective_from"]: raise ValueError("Effective-until cannot precede effective-from")
    if ident: put(f"/doctors/availability/{int(ident)}",body)
    else: post("/doctors/availability",body)
-   flash("Availability saved. Generated slots update after the next daily materializer run.","success"); return redirect(url_for("doctor.availability"))
+   session.pop("schedule_cache",None)
+   flash("Availability saved. Your schedule has been updated.","success"); return redirect(url_for("doctor.availability"))
   except (ValueError,APIError) as e: flash(getattr(e,"message",str(e)),"error")
  rows,err=safe_call(get,"/doctors/availability"); types,_=safe_call(get,"/doctors/consultation-types"); rows=rows if isinstance(rows,list) else []; types=types if isinstance(types,list) else []
  hospitals=sorted({r.get("hospital_id") for r in rows if r.get("hospital_id") is not None})
@@ -221,7 +222,7 @@ def availability():
 @bp.post("/availability/<int:ident>/delete")
 @doctor_required
 def delete_availability(ident):
- try: delete(f"/doctors/availability/{ident}"); flash("Availability window deleted.","success")
+ try: delete(f"/doctors/availability/{ident}"); session.pop("schedule_cache",None); flash("Availability window deleted.","success")
  except APIError as e: flash(e.message,"error")
  return redirect(url_for("doctor.availability"))
 
