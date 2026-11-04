@@ -245,52 +245,327 @@ def delete_blackout(ident):
  try: delete(f"/doctors/blackouts/{ident}"); flash("Blackout deleted.","success")
  except APIError as e: flash(e.message,"error")
  return redirect(url_for("doctor.blackouts"))
-
 @bp.get("/schedule")
 @doctor_required
 def schedule():
- day=request.args.get("date",datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat())
- view=request.args.get("view","day")
- if view not in {"day","week"}: view="day"
- try: datetime.strptime(day,"%Y-%m-%d")
- except ValueError: day=datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
- dates=[(date.fromisoformat(day)+timedelta(days=i)).isoformat() for i in range(7)] if view=="week" else [day]
- # refresh=1 bypasses the short session cache after materializer runs
- force_refresh=request.args.get("refresh")=="1"
- cache=session.get("schedule_cache",{}); now_ts=datetime.now().timestamp(); pending=[]; schedules={}
- for d in dates:
-  cached=cache.get(d)
-  if not force_refresh and cached and now_ts-cached.get("at",0)<45:
-   schedules[d]=cached.get("data")
-  else:
-   pending.append(d)
- def load(d):
-  try: return d,get("/doctors/schedule",{"date":d}),None
-  except APIError as e:
-   if e.status==404:return d,{"slots":[],"appointments":[],"blackouts":[]},None
-   return d,None,e
- with ThreadPoolExecutor(max_workers=7) as pool:
-  futures=[pool.submit(copy_context().run,load,d) for d in pending]
-  results=[future.result() for future in futures]
- for d,r,e in results:
-  if r is not None:
-   schedules[d]=r
-   cache[d]={"at":now_ts,"data":r}
- session["schedule_cache"]=cache
- errors=[e for d,r,e in results if e]
- types,_=safe_call(get,"/doctors/consultation-types")
- type_map={str(t.get("consultation_type_id")):t for t in (types or []) if isinstance(t,dict)}
- # Build display counters from real DynamoDB slots and RDS blackout/appointment data.
- day_data=schedules.get(day,{}) if view=="day" else {}
- day_slots=day_data.get("slots",[]) if isinstance(day_data,dict) else []
- day_blackouts=day_data.get("blackouts",[]) if isinstance(day_data,dict) else []
- total_slots=len(day_slots)
- blackout_count=sum(1 for s in day_slots if s.get("isBlackout"))
- booked_count=sum(int(s.get("bookedCount",0) or 0) for s in day_slots)
- available_count=sum(1 for s in day_slots if not s.get("isBlackout") and int(s.get("bookedCount",0) or 0)<int(s.get("capacity",1) or 1))
- inactive_count=len(day_blackouts)
- return page("Schedule","schedule",view=view,day=day,dates=dates,schedules=schedules,type_map=type_map,errors=errors,
-             schedule_stats={"total":total_slots,"available":available_count,"booked":booked_count,"inactive":inactive_count})
+    from datetime import datetime, date, timedelta, time
+    from zoneinfo import ZoneInfo
+    from concurrent.futures import ThreadPoolExecutor
+    from contextvars import copy_context
+
+    timezone = ZoneInfo("Asia/Kolkata")
+
+    day = request.args.get(
+        "date",
+        datetime.now(timezone).date().isoformat()
+    )
+
+    view = request.args.get("view", "day")
+
+    if view not in {"day", "week"}:
+        view = "day"
+
+    try:
+        datetime.strptime(day, "%Y-%m-%d")
+    except ValueError:
+        day = datetime.now(timezone).date().isoformat()
+
+    dates = (
+        [
+            (date.fromisoformat(day) + timedelta(days=i)).isoformat()
+            for i in range(7)
+        ]
+        if view == "week"
+        else [day]
+    )
+
+    # Refresh cache when requested
+    force_refresh = request.args.get("refresh") == "1"
+
+    cache = session.get("schedule_cache", {})
+    now_ts = datetime.now().timestamp()
+
+    pending = []
+    schedules = {}
+
+    for d in dates:
+        cached = cache.get(d)
+
+        if (
+            not force_refresh
+            and cached
+            and now_ts - cached.get("at", 0) < 45
+        ):
+            schedules[d] = cached.get("data")
+        else:
+            pending.append(d)
+
+    def load(d):
+        try:
+            result = get("/doctors/schedule", {"date": d})
+            return d, result, None
+
+        except APIError as e:
+            if e.status == 404:
+                return d, {
+                    "slots": [],
+                    "appointments": [],
+                    "blackouts": []
+                }, None
+
+            return d, None, e
+
+    with ThreadPoolExecutor(max_workers=7) as pool:
+        futures = [
+            pool.submit(copy_context().run, load, d)
+            for d in pending
+        ]
+
+        results = [future.result() for future in futures]
+
+    for d, result, error in results:
+        if result is not None:
+            schedules[d] = result
+
+            cache[d] = {
+                "at": now_ts,
+                "data": result
+            }
+
+    session["schedule_cache"] = cache
+
+    errors = [
+        error
+        for d, result, error in results
+        if error
+    ]
+
+    # Consultation type lookup
+    types, _ = safe_call(get, "/doctors/consultation-types")
+
+    type_map = {
+        str(t.get("consultation_type_id")): t
+        for t in (types or [])
+        if isinstance(t, dict)
+    }
+
+    # Convert times to comparable time objects
+    def parse_time(value):
+        if not value:
+            return None
+
+        try:
+            if isinstance(value, time):
+                return value
+
+            return time.fromisoformat(
+                str(value).replace("Z", "")
+            )
+
+        except (ValueError, TypeError):
+            return None
+
+    def get_slot_time(item, *keys):
+        for key in keys:
+            if item.get(key):
+                return parse_time(item[key])
+
+        return None
+
+    # Build combined schedule for every requested date
+    schedule_items = {}
+
+    for d in dates:
+        data = schedules.get(d) or {}
+
+        if not isinstance(data, dict):
+            data = {}
+
+        slots = data.get("slots") or []
+        blackouts = data.get("blackouts") or []
+
+        combined = []
+
+        # Process actual generated DynamoDB slots
+        for original_slot in slots:
+            slot = dict(original_slot)
+
+            slot_start = get_slot_time(
+                slot,
+                "startTime",
+                "start_time",
+                "start"
+            )
+
+            slot_end = get_slot_time(
+                slot,
+                "endTime",
+                "end_time",
+                "end"
+            )
+
+            booked = int(slot.get("bookedCount", 0) or 0)
+            capacity = int(slot.get("capacity", 1) or 1)
+
+            overlapping_blackout = None
+
+            # Check whether a blackout overlaps this slot
+            for blackout in blackouts:
+                blackout_start = get_slot_time(
+                    blackout,
+                    "startTime",
+                    "start_time",
+                    "start"
+                )
+
+                blackout_end = get_slot_time(
+                    blackout,
+                    "endTime",
+                    "end_time",
+                    "end"
+                )
+
+                if (
+                    slot_start
+                    and slot_end
+                    and blackout_start
+                    and blackout_end
+                    and slot_start < blackout_end
+                    and slot_end > blackout_start
+                ):
+                    overlapping_blackout = blackout
+                    break
+
+            slot["isBlackout"] = bool(overlapping_blackout)
+
+            if overlapping_blackout:
+                slot["status"] = "BLACKOUT"
+                slot["blackoutReason"] = (
+                    overlapping_blackout.get("reason")
+                    or overlapping_blackout.get("description")
+                    or "Doctor unavailable"
+                )
+
+            elif booked >= capacity:
+                slot["status"] = "BOOKED"
+
+            elif booked > 0:
+                slot["status"] = "PARTIALLY_BOOKED"
+
+            else:
+                slot["status"] = "OPEN"
+
+            # Attach consultation type information
+            consultation_type_id = str(
+                slot.get("consultationTypeId")
+                or slot.get("consultation_type_id")
+                or ""
+            )
+
+            slot["consultationType"] = type_map.get(
+                consultation_type_id,
+                {}
+            )
+
+            slot["itemType"] = "SLOT"
+
+            combined.append(slot)
+
+        # Add blackout windows separately.
+        # This ensures blackouts appear even when no slots exist.
+        for blackout in blackouts:
+            blackout_item = dict(blackout)
+
+            blackout_item["itemType"] = "BLACKOUT"
+            blackout_item["status"] = "BLACKOUT"
+
+            blackout_item["startTime"] = (
+                blackout.get("startTime")
+                or blackout.get("start_time")
+                or blackout.get("start")
+            )
+
+            blackout_item["endTime"] = (
+                blackout.get("endTime")
+                or blackout.get("end_time")
+                or blackout.get("end")
+            )
+
+            combined.append(blackout_item)
+
+        # Sort slots and blackout windows by start time
+        combined.sort(
+            key=lambda item: (
+                get_slot_time(
+                    item,
+                    "startTime",
+                    "start_time",
+                    "start"
+                ) or time.min,
+                0 if item.get("itemType") == "BLACKOUT" else 1
+            )
+        )
+
+        schedule_items[d] = combined
+
+    # Calculate summary counters from actual slots
+    day_data = schedules.get(day, {}) if view == "day" else {}
+
+    day_slots = (
+        day_data.get("slots", [])
+        if isinstance(day_data, dict)
+        else []
+    )
+
+    day_blackouts = (
+        day_data.get("blackouts", [])
+        if isinstance(day_data, dict)
+        else []
+    )
+
+    total_slots = len(day_slots)
+
+    blackout_slot_count = 0
+    available_count = 0
+    booked_count = 0
+
+    for slot in day_slots:
+        slot = dict(slot)
+
+        booked = int(slot.get("bookedCount", 0) or 0)
+        capacity = int(slot.get("capacity", 1) or 1)
+
+        is_blackout = slot.get("isBlackout", False)
+
+        if is_blackout:
+            blackout_slot_count += 1
+
+        elif booked >= capacity:
+            booked_count += 1
+
+        else:
+            available_count += 1
+
+    inactive_count = blackout_slot_count
+
+    return page(
+        "Schedule",
+        "schedule",
+        view=view,
+        day=day,
+        dates=dates,
+        schedules=schedules,
+        schedule_items=schedule_items,
+        type_map=type_map,
+        errors=errors,
+        schedule_stats={
+            "total": total_slots,
+            "available": available_count,
+            "booked": booked_count,
+            "inactive": inactive_count,
+            "blackouts": len(day_blackouts)
+        }
+    )
 
 @bp.get("/appointments")
 @doctor_required
