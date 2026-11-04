@@ -1,0 +1,276 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: MediSlot Frontend Stack - EC2 web server (nginx + gunicorn) for the Flask doctor dashboard
+
+# Reuses the public subnet and EC2 security group (ports 80/443) already created
+# by the network stack (medislot-network-<env>). Everything else is created here.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+
+  ApiBaseUrl:
+    Type: String
+    Description: MediSlot API base URL (application stack output ApiBaseUrl), no trailing slash
+    AllowedPattern: '^https://[^\s/]+(/[^\s]*[^\s/])?$'
+    ConstraintDescription: Must be an https URL without a trailing slash
+
+  FrontendCodeBucket:
+    Type: String
+    Description: S3 bucket that holds the frontend zip (data stack output ApplicationFilesBucketName)
+
+  FrontendCodeKey:
+    Type: String
+    Default: frontend/medislot-frontend.zip
+    Description: S3 key of the frontend zip. The zip must contain a top-level frontend/ folder.
+    AllowedPattern: '^frontend/.+\.zip$'
+    ConstraintDescription: Key must start with frontend/ and end with .zip
+
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Resources:
+
+  # Flask SECRET_KEY, generated once by Secrets Manager. Nobody has to type it.
+  FlaskSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub medislot/${Environment}/frontend-secret-key
+      Description: Flask session signing key for the MediSlot dashboard
+      GenerateSecretString:
+        PasswordLength: 48
+        ExcludePunctuation: true
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  WebInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Instance role for the MediSlot dashboard EC2 server
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Lets you open a shell with Session Manager, so no SSH port or key pair is needed.
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: ReadFrontendCodeAndSecret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::${FrontendCodeBucket}/frontend/*
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref FlaskSecret
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  WebInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref WebInstanceRole
+
+  WebLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub medislot-${Environment}-web-lt
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmiId
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile:
+          Arn: !GetAtt WebInstanceProfile.Arn
+        MetadataOptions:
+          HttpTokens: required
+          HttpEndpoint: enabled
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 12
+              VolumeType: gp3
+              Encrypted: true
+              DeleteOnTermination: true
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -euxo pipefail
+            exec > >(tee /var/log/medislot-userdata.log) 2>&1
+
+            dnf install -y aws-cfn-bootstrap
+            signal() { /opt/aws/bin/cfn-signal -e "$1" --stack "${AWS::StackName}" --resource WebInstance --region "${AWS::Region}" || true; }
+            trap 'signal 1' ERR
+
+            dnf install -y python3.12 python3.12-pip nginx unzip
+            mkdir -p /opt/medislot /etc/medislot /var/lib/medislot/sessions
+
+            # ---- Flask environment (secret is read from Secrets Manager) ----
+            SECRET_KEY=$(aws secretsmanager get-secret-value --secret-id "${FlaskSecret}" --region "${AWS::Region}" --query SecretString --output text)
+            cat > /etc/medislot/web.env <<EOF
+            API_BASE_URL=${ApiBaseUrl}
+            SECRET_KEY=$SECRET_KEY
+            APP_ENV=production
+            SESSION_COOKIE_SECURE=0
+            SESSION_DIR=/var/lib/medislot/sessions
+            STATIC_BASE_URL=/static
+            REQUEST_TIMEOUT_SECONDS=10
+            EOF
+            chmod 640 /etc/medislot/web.env
+            chown root:nginx /etc/medislot/web.env
+
+            # ---- Re-runnable deploy script: pulls the zip from S3 and restarts the app ----
+            cat > /usr/local/bin/medislot-deploy <<'DEPLOY'
+            #!/bin/bash
+            set -euo pipefail
+            aws s3 cp "s3://${FrontendCodeBucket}/${FrontendCodeKey}" /tmp/frontend.zip --region "${AWS::Region}"
+            rm -rf /tmp/fe && mkdir -p /tmp/fe
+            unzip -q /tmp/frontend.zip -d /tmp/fe
+            test -f /tmp/fe/frontend/requirements.txt || { echo "Zip must contain frontend/ at its root"; exit 1; }
+            # Keep the existing virtualenv between deploys so updates are fast.
+            if [ -d /opt/medislot/frontend/.venv ]; then mv /opt/medislot/frontend/.venv /tmp/fe/frontend/.venv; fi
+            rm -rf /opt/medislot/frontend
+            mv /tmp/fe/frontend /opt/medislot/frontend
+            if [ ! -x /opt/medislot/frontend/.venv/bin/python ]; then python3.12 -m venv /opt/medislot/frontend/.venv; fi
+            /opt/medislot/frontend/.venv/bin/pip install --upgrade pip
+            /opt/medislot/frontend/.venv/bin/pip install -r /opt/medislot/frontend/requirements.txt
+            chown -R ec2-user:nginx /opt/medislot /var/lib/medislot
+            systemctl restart medislot-web
+            DEPLOY
+            chmod +x /usr/local/bin/medislot-deploy
+
+            # ---- gunicorn service ----
+            cat > /etc/systemd/system/medislot-web.service <<'UNIT'
+            [Unit]
+            Description=MediSlot Flask Doctor Dashboard
+            After=network.target
+            [Service]
+            User=ec2-user
+            Group=nginx
+            WorkingDirectory=/opt/medislot/frontend
+            EnvironmentFile=/etc/medislot/web.env
+            ExecStart=/opt/medislot/frontend/.venv/bin/gunicorn --workers 2 --threads 2 --bind 127.0.0.1:8000 --timeout 60 'app:create_app()'
+            Restart=always
+            RestartSec=5
+            [Install]
+            WantedBy=multi-user.target
+            UNIT
+
+            # ---- nginx: minimal main config plus the MediSlot site ----
+            cat > /etc/nginx/nginx.conf <<'NGX'
+            user nginx;
+            worker_processes auto;
+            error_log /var/log/nginx/error.log;
+            pid /run/nginx.pid;
+            events { worker_connections 1024; }
+            http {
+              include /etc/nginx/mime.types;
+              default_type application/octet-stream;
+              access_log /var/log/nginx/access.log;
+              sendfile on;
+              include /etc/nginx/conf.d/*.conf;
+            }
+            NGX
+            cat > /etc/nginx/conf.d/medislot.conf <<'SITE'
+            server {
+              listen 80 default_server;
+              server_name _;
+              client_max_body_size 5m;
+              location /static/ { alias /opt/medislot/frontend/app/static/; expires 7d; add_header Cache-Control "public"; }
+              location / {
+                proxy_pass http://127.0.0.1:8000;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              }
+            }
+            SITE
+
+            systemctl daemon-reload
+            /usr/local/bin/medislot-deploy
+            systemctl enable medislot-web nginx
+            nginx -t
+            systemctl restart nginx
+
+            # ---- health check before telling CloudFormation we are done ----
+            for i in $(seq 1 30); do
+              if curl -fsS -o /dev/null http://127.0.0.1/; then signal 0; exit 0; fi
+              sleep 5
+            done
+            echo "Dashboard did not respond on port 80"
+            signal 1
+            exit 1
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub medislot-${Environment}-web
+              - Key: Project
+                Value: MediSlot
+
+  WebInstance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT20M
+    Properties:
+      SubnetId:
+        Fn::ImportValue: !Sub medislot-${Environment}-PublicSubnetId
+      SecurityGroupIds:
+        - Fn::ImportValue: !Sub medislot-${Environment}-EC2SecurityGroupId
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebLaunchTemplate
+        Version: !GetAtt WebLaunchTemplate.LatestVersionNumber
+
+  # Fixed public address that survives stop/start.
+  WebElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-web-eip
+
+  WebElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt WebElasticIp.AllocationId
+      InstanceId: !Ref WebInstance
+
+Outputs:
+  DashboardUrl:
+    Description: Open this in your browser
+    Value: !Sub http://${WebElasticIp}
+
+  InstanceId:
+    Description: EC2 instance ID
+    Value: !Ref WebInstance
+
+  RedeployCommand:
+    Description: Run after uploading a new frontend zip to S3 (no stack update needed)
+    Value: !Sub >-
+      aws ssm send-command --region ${AWS::Region} --document-name AWS-RunShellScript
+      --instance-ids ${WebInstance} --parameters commands=/usr/local/bin/medislot-deploy
