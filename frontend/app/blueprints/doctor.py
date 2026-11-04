@@ -39,7 +39,7 @@ def login():
     else:
      login_session(data)
      try:
-      p=get("/doctors/profile"); session["doctor_name"]=(p.get("first_name","")+" "+p.get("last_name","")).strip() or "Doctor"; session["profile_status"]=p.get("profile_status","—")
+      p=get("/doctors/profile"); session["profile"]=p or {}; session["doctor_name"]=(p.get("first_name","")+" "+p.get("last_name","")).strip() or "Doctor"; session["profile_status"]=p.get("profile_status","—")
      except APIError: pass
      return redirect(url_for("doctor.dashboard"))
    except APIError as e: flash(e.message,"error")
@@ -201,29 +201,48 @@ def delete_blackout(ident):
 @bp.get("/schedule")
 @doctor_required
 def schedule():
- day=request.args.get("date",datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()); view=request.args.get("view","day")
+ day=request.args.get("date",datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat())
+ view=request.args.get("view","day")
+ if view not in {"day","week"}: view="day"
  try: datetime.strptime(day,"%Y-%m-%d")
  except ValueError: day=datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
  dates=[(date.fromisoformat(day)+timedelta(days=i)).isoformat() for i in range(7)] if view=="week" else [day]
+ # refresh=1 bypasses the short session cache after materializer runs
+ force_refresh=request.args.get("refresh")=="1"
  cache=session.get("schedule_cache",{}); now_ts=datetime.now().timestamp(); pending=[]; schedules={}
  for d in dates:
   cached=cache.get(d)
-  if cached and now_ts-cached.get("at",0)<45: schedules[d]=cached.get("data")
-  else: pending.append(d)
+  if not force_refresh and cached and now_ts-cached.get("at",0)<45:
+   schedules[d]=cached.get("data")
+  else:
+   pending.append(d)
  def load(d):
   try: return d,get("/doctors/schedule",{"date":d}),None
   except APIError as e:
-   if e.status==404:return d,{"slots":[],"appointments":[]},None
+   if e.status==404:return d,{"slots":[],"appointments":[],"blackouts":[]},None
    return d,None,e
  with ThreadPoolExecutor(max_workers=7) as pool:
   futures=[pool.submit(copy_context().run,load,d) for d in pending]
   results=[future.result() for future in futures]
  for d,r,e in results:
-  if r is not None: schedules[d]=r; cache[d]={"at":now_ts,"data":r}
+  if r is not None:
+   schedules[d]=r
+   cache[d]={"at":now_ts,"data":r}
  session["schedule_cache"]=cache
  errors=[e for d,r,e in results if e]
- types,_=safe_call(get,"/doctors/consultation-types"); type_map={str(t.get("consultation_type_id")):t for t in (types or []) if isinstance(t,dict)}
- return page("Schedule","schedule",view=view,day=day,dates=dates,schedules=schedules,type_map=type_map,errors=errors)
+ types,_=safe_call(get,"/doctors/consultation-types")
+ type_map={str(t.get("consultation_type_id")):t for t in (types or []) if isinstance(t,dict)}
+ # Build display counters from real DynamoDB slots and RDS blackout/appointment data.
+ day_data=schedules.get(day,{}) if view=="day" else {}
+ day_slots=day_data.get("slots",[]) if isinstance(day_data,dict) else []
+ day_blackouts=day_data.get("blackouts",[]) if isinstance(day_data,dict) else []
+ total_slots=len(day_slots)
+ blackout_count=sum(1 for s in day_slots if s.get("isBlackout"))
+ booked_count=sum(int(s.get("bookedCount",0) or 0) for s in day_slots)
+ available_count=sum(1 for s in day_slots if not s.get("isBlackout") and int(s.get("bookedCount",0) or 0)<int(s.get("capacity",1) or 1))
+ inactive_count=len(day_blackouts)
+ return page("Schedule","schedule",view=view,day=day,dates=dates,schedules=schedules,type_map=type_map,errors=errors,
+             schedule_stats={"total":total_slots,"available":available_count,"booked":booked_count,"inactive":inactive_count})
 
 @bp.get("/appointments")
 @doctor_required

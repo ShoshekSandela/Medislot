@@ -4,3 +4,48 @@
 .stat-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.stat-card{margin:0;display:grid;gap:9px}.stat-card span,.stat-card small{font-size:11px;color:var(--muted)}.stat-card strong{font-size:27px;letter-spacing:-.04em}.dashboard-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:17px}.next-patient{display:flex;align-items:center;gap:14px}.next-patient p{font-size:11px}.hidden{display:none!important}@media(max-width:700px){.stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-grid{grid-template-columns:1fr}}
 
 .disabled-actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin:20px 0}
+
+
+/* MediSlot doctor schedule - clinical daily card layout */
+.schedule-toolbar-panel{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:18px 22px;margin:10px 0 24px;box-shadow:var(--shadow)}
+.schedule-toolbar-top{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap}
+.schedule-date-nav{display:flex;align-items:center;gap:8px}
+.schedule-date-nav input[type=date]{background:var(--surface2);color:var(--text);border:1px solid var(--line);border-radius:9px;padding:10px 12px;min-height:40px}
+.schedule-nav-btn,.schedule-today{display:inline-flex;align-items:center;justify-content:center;min-width:40px;height:40px;padding:0 12px;border:1px solid var(--line);border-radius:9px;background:var(--surface2);color:var(--text);font-weight:700;text-decoration:none;cursor:pointer}
+.schedule-go{font-size:12px}.schedule-today{background:var(--primary);border-color:var(--primary);color:#fff}
+.schedule-stats{display:flex;justify-content:flex-end;gap:28px;flex-wrap:wrap;margin-top:20px;padding-top:17px;border-top:1px solid var(--line)}
+.schedule-stats div{display:flex;align-items:center;gap:7px;font-size:13px}.schedule-stats span{color:var(--muted)}.schedule-stats strong{font-size:15px}
+.stat-available{color:#0cc9a5}.stat-booked{color:#f3b544}.stat-inactive{color:#9aa4b2}
+.schedule-day-panel{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:26px;margin-bottom:22px;box-shadow:var(--shadow)}
+.schedule-day-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+.schedule-day-heading h2{font-size:19px;margin:0 0 5px}.schedule-day-heading p{font-size:13px;color:var(--muted);margin:0}
+.schedule-card-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+.schedule-slot-card{min-width:0;background:var(--surface2);border:1px solid var(--line);border-left:4px solid #0cc9a5;border-radius:12px;padding:20px 19px;box-shadow:0 4px 14px rgba(0,0,0,.08)}
+.schedule-slot-card.slot-open{border-left-color:#0cc9a5}
+.schedule-slot-card.slot-partial{border-left-color:#e8ad35}
+.schedule-slot-card.slot-full{border-left-color:#e15d67}
+.schedule-slot-card.blackout{border-left-color:#758195;opacity:.78;background:var(--surface2)}
+.schedule-slot-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+.schedule-slot-top h3{font-size:17px;margin:0;letter-spacing:-.02em}
+.schedule-status{font-size:11px;font-weight:700;padding:5px 10px;border-radius:7px;white-space:nowrap;background:rgba(12,201,165,.12);color:#0cc9a5;border:1px solid rgba(12,201,165,.28)}
+.slot-partial .schedule-status{background:rgba(232,173,53,.12);color:#e8ad35;border-color:rgba(232,173,53,.3)}
+.slot-full .schedule-status{background:rgba(225,93,103,.12);color:#e15d67;border-color:rgba(225,93,103,.3)}
+.blackout .schedule-status{background:rgba(117,129,149,.15);color:#9aa4b2;border-color:rgba(117,129,149,.3)}
+.schedule-consultation{font-size:14px;color:var(--muted);margin:0 0 16px}
+.schedule-capacity{display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:12px;margin-bottom:12px}
+.schedule-capacity strong{color:var(--text);font-weight:600}
+.schedule-progress{height:6px;background:var(--line);border-radius:99px;overflow:hidden}
+.schedule-progress span{display:block;height:100%;background:#0cc9a5;border-radius:99px}
+.slot-partial .schedule-progress span{background:#e8ad35}.slot-full .schedule-progress span{background:#e15d67}.blackout .schedule-progress span{background:#758195}
+.schedule-patients{font-size:12px;margin-top:13px}.schedule-patients summary{cursor:pointer;color:var(--primary)}
+.schedule-empty{padding:55px 20px;text-align:center;border:1px dashed var(--line);border-radius:12px;color:var(--muted)}
+.schedule-empty h3{color:var(--text);margin:12px 0 6px}.schedule-empty p{max-width:560px;margin:0 auto 18px;font-size:13px}
+.schedule-week-modern{display:grid;grid-template-columns:repeat(7,minmax(145px,1fr));gap:12px;overflow-x:auto}
+.schedule-week-day{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:13px;min-height:180px}
+.schedule-week-day h3{font-size:12px;margin:0 0 12px}
+.week-slot{display:grid;gap:5px;padding:9px;margin-bottom:8px;border-radius:8px;background:var(--surface2);border-left:3px solid #0cc9a5;font-size:10px}
+.week-slot small,.week-slot span{color:var(--muted)}.week-slot.slot-partial{border-left-color:#e8ad35}.week-slot.slot-full{border-left-color:#e15d67}.week-slot.blackout{border-left-color:#758195}
+.profile-photo-avatar img{width:100%;height:100%;object-fit:cover;display:block;border-radius:50%}
+.profile-photo-avatar .avatar-fallback{width:100%;height:100%;align-items:center;justify-content:center}
+@media(max-width:1050px){.schedule-card-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.schedule-week-modern{grid-template-columns:repeat(4,minmax(145px,1fr))}}
+@media(max-width:650px){.schedule-day-panel{padding:16px}.schedule-card-grid{grid-template-columns:1fr}.schedule-stats{justify-content:space-between;gap:12px}.schedule-toolbar-panel{padding:14px}.schedule-date-nav{width:100%;flex-wrap:wrap}.schedule-date-nav input[type=date]{flex:1;min-width:145px}}

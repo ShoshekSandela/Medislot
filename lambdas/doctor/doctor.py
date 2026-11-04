@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import boto3
 import pymysql
@@ -688,11 +688,41 @@ def doctor_schedule(connection, doctor_id, query_params):
             )
             appointments = cursor.fetchall()
 
+            # Include this doctor's blackout windows overlapping the selected IST date.
+            day_start = datetime.combine(target_date, datetime.min.time())
+            day_end = day_start + timedelta(days=1)
+            cursor.execute(
+                """
+                SELECT blackout_id, hospital_id, start_at_ist, end_at_ist, reason
+                FROM doctor_blackouts
+                WHERE doctor_id = %s
+                  AND start_at_ist < %s
+                  AND end_at_ist > %s
+                ORDER BY start_at_ist
+                """,
+                (int(doctor_id), day_end, day_start),
+            )
+            blackouts = cursor.fetchall()
+
+        # Mark any previously materialized slots that overlap a blackout.
+        for slot in slots:
+            slot_start = str(slot.get("slotTime", ""))[:19].replace("T", " ")
+            slot_end = str(slot.get("endTime", ""))[:19].replace("T", " ")
+            slot["isBlackout"] = any(
+                int(slot.get("hospitalId", 0)) == int(blackout.get("hospital_id", 0))
+                and slot_start < str(blackout.get("end_at_ist", ""))
+                and slot_end > str(blackout.get("start_at_ist", ""))
+                for blackout in blackouts
+            )
+            if slot["isBlackout"]:
+                slot["status"] = "BLACKOUT"
+
         return response(200, {
             "date": target_date.isoformat(),
             "timezone": "Asia/Kolkata",
             "slots": slots,
             "appointments": appointments,
+            "blackouts": blackouts,
         })
     except Exception:
         logger.exception("Doctor schedule lookup failed")
