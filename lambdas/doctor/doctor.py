@@ -774,7 +774,7 @@ def doctor_schedule(connection, doctor_id, query_params):
     try:
         table = dynamodb.Table(table_name)
         filter_expression = (
-            Attr("doctorId").eq(int(doctor_id))
+            Attr("doctorId").eq(str(doctor_id))
             & Attr("slotTime").begins_with(target_date.isoformat())
         )
         result = table.scan(FilterExpression=filter_expression)

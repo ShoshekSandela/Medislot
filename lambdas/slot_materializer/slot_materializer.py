@@ -200,7 +200,7 @@ def create_slot(
 
     item = {
         "slotId": slot_id,
-        "doctorId": int(availability["doctor_id"]),
+        "doctorId": str(availability["doctor_id"]),
         "hospitalId": int(availability["hospital_id"]),
         "consultationTypeId": int(availability["consultation_type_id"]),
         "consultationFee": str(availability.get("consultation_fee", "0.00")),
