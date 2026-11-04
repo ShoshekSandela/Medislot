@@ -21,6 +21,7 @@ env:
   DATA_STACK_NAME: medislot-data-dev
   IAM_STACK_NAME: medislot-iam-dev
   APPLICATION_STACK_NAME: medislot-application-dev
+  FRONTEND_STACK_NAME: medislot-frontend-dev
 
 
 jobs:
@@ -376,3 +377,179 @@ jobs:
               ProfilePhotosBucketName="${{ needs.deploy-data.outputs.application_files_bucket }}" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
+  # ==========================================================
+  # JOB 5 - FRONTEND STACK
+  # ==========================================================
+
+  deploy-frontend:
+    name: Package and Deploy Flask Frontend
+    runs-on: ubuntu-latest
+    needs:
+      - deploy-network
+      - deploy-data
+      - deploy-application
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate Frontend Files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f frontend/requirements.txt || { echo "ERROR: frontend/requirements.txt not found"; exit 1; }
+          test -f frontend/app/__init__.py || { echo "ERROR: frontend/app/__init__.py not found"; exit 1; }
+          test -f cloudformation/frontend-stack.yaml || { echo "ERROR: cloudformation/frontend-stack.yaml not found"; exit 1; }
+
+      - name: Get API Gateway URL
+        id: api
+        shell: bash
+        run: |
+          set -euo pipefail
+          API_BASE_URL=$(aws cloudformation describe-stacks \
+            --stack-name "$APPLICATION_STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiBaseUrl'].OutputValue | [0]" \
+            --output text)
+
+          if [ -z "$API_BASE_URL" ] || [ "$API_BASE_URL" = "None" ]; then
+            echo "ERROR: ApiBaseUrl output was not found in $APPLICATION_STACK_NAME. Check application-stack.yaml Outputs." >&2
+            exit 1
+          fi
+
+          echo "api_base_url=$API_BASE_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Package Frontend
+        id: frontend-package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -d frontend
+          FRONTEND_ZIP="$RUNNER_TEMP/medislot-frontend-${GITHUB_SHA}.zip"
+
+          # Keep frontend/ as the top-level folder inside the ZIP.
+          # Exclude local virtual environments, secrets, caches and runtime files.
+          zip -qr "$FRONTEND_ZIP" frontend \
+            -x 'frontend/.venv/*' \
+               'frontend/venv/*' \
+               'frontend/.env' \
+               'frontend/.env.*' \
+               'frontend/**/__pycache__/*' \
+               'frontend/**/*.pyc' \
+               'frontend/.pytest_cache/*' \
+               'frontend/instance/*'
+
+          # Verify the required top-level layout expected by frontend-stack.yaml.
+          unzip -l "$FRONTEND_ZIP" | grep -q 'frontend/requirements.txt' || {
+            echo "ERROR: frontend/requirements.txt is missing from ZIP"; exit 1;
+          }
+
+          echo "zip_path=$FRONTEND_ZIP" >> "$GITHUB_OUTPUT"
+          echo "zip_key=frontend/medislot-frontend-${GITHUB_SHA}.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Frontend ZIP to S3
+        run: |
+          set -euo pipefail
+          aws s3 cp \
+            "${{ steps.frontend-package.outputs.zip_path }}" \
+            "s3://${{ needs.deploy-data.outputs.application_files_bucket }}/${{ steps.frontend-package.outputs.zip_key }}" \
+            --region "$AWS_REGION"
+
+      - name: Validate Frontend CloudFormation Stack
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://cloudformation/frontend-stack.yaml \
+            --region "$AWS_REGION"
+
+      - name: Deploy Frontend CloudFormation Stack
+        run: |
+          set -euo pipefail
+          aws cloudformation deploy \
+            --template-file cloudformation/frontend-stack.yaml \
+            --stack-name "$FRONTEND_STACK_NAME" \
+            --region "$AWS_REGION" \
+            --parameter-overrides \
+              Environment=dev \
+              ApiBaseUrl="${{ steps.api.outputs.api_base_url }}" \
+              FrontendCodeBucket="${{ needs.deploy-data.outputs.application_files_bucket }}" \
+              FrontendCodeKey="${{ steps.frontend-package.outputs.zip_key }}" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Get Frontend Stack Outputs
+        id: frontend-outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUTPUTS=$(aws cloudformation describe-stacks \
+            --stack-name "$FRONTEND_STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].Outputs' \
+            --output json)
+
+          output() {
+            printf '%s' "$OUTPUTS" | jq -er --arg key "$1" \
+              '.[] | select(.OutputKey == $key) | .OutputValue'
+          }
+
+          echo "dashboard_url=$(output DashboardUrl)" >> "$GITHUB_OUTPUT"
+          echo "instance_id=$(output InstanceId)" >> "$GITHUB_OUTPUT"
+
+      - name: Redeploy Frontend on EC2
+        shell: bash
+        env:
+          INSTANCE_ID: ${{ steps.frontend-outputs.outputs.instance_id }}
+        run: |
+          set -euo pipefail
+
+          COMMAND_ID=$(aws ssm send-command \
+            --region "$AWS_REGION" \
+            --document-name AWS-RunShellScript \
+            --instance-ids "$INSTANCE_ID" \
+            --parameters 'commands=["/usr/local/bin/medislot-deploy"]' \
+            --comment "Deploy MediSlot frontend ${GITHUB_SHA}" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "SSM command: $COMMAND_ID"
+
+          for attempt in $(seq 1 36); do
+            STATUS=$(aws ssm get-command-invocation \
+              --region "$AWS_REGION" \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || true)
+
+            case "$STATUS" in
+              Success)
+                echo "Frontend redeployment completed successfully."
+                exit 0
+                ;;
+              Failed|Cancelled|TimedOut)
+                aws ssm get-command-invocation \
+                  --region "$AWS_REGION" \
+                  --command-id "$COMMAND_ID" \
+                  --instance-id "$INSTANCE_ID" \
+                  --output json || true
+                echo "ERROR: Frontend redeployment failed with status: $STATUS" >&2
+                exit 1
+                ;;
+            esac
+            sleep 5
+          done
+
+          echo "ERROR: Timed out waiting for the frontend redeployment command." >&2
+          exit 1
+
+      - name: Show Frontend URL
+        run: |
+          echo "### MediSlot Frontend Deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "Dashboard: ${{ steps.frontend-outputs.outputs.dashboard_url }}" >> "$GITHUB_STEP_SUMMARY"
