@@ -97,7 +97,7 @@ def mysql_time_to_time(value):
     )
 
 
-def get_availability(connection, day_of_week, target_date, doctor_id=None):
+def get_availability(connection, day_of_week, target_date):
 
     sql = """
         SELECT
@@ -126,14 +126,11 @@ def get_availability(connection, day_of_week, target_date, doctor_id=None):
           )
     """
 
-    params = [day_of_week, target_date, target_date]
-
-    if doctor_id is not None:
-        sql += " AND da.doctor_id = %s"
-        params.append(int(doctor_id))
-
     with connection.cursor() as cursor:
-        cursor.execute(sql, params)
+        cursor.execute(
+            sql,
+            (day_of_week, target_date, target_date)
+        )
 
         return cursor.fetchall()
 
@@ -177,8 +174,14 @@ def create_slot(
     end_ist,
     connection
 ):
+    """
+    Persist every generated availability slot.
 
-    blocked_by_blackout = is_blackout(
+    A blackout changes the slot status; it does not prevent the slot record
+    from being written. Existing slots are not overwritten, and their
+    bookedCount is never reset.
+    """
+    blackout = is_blackout(
         connection,
         availability["doctor_id"],
         availability["hospital_id"],
@@ -186,8 +189,6 @@ def create_slot(
         end_ist,
     )
 
-    # Deterministic ID prevents duplicate slots. Blackout-overlapping slots
-    # are also materialized, but carry BLACKOUT status and must not be bookable.
     slot_id = (
         f"{availability['doctor_id']}#"
         f"{availability['hospital_id']}#"
@@ -195,21 +196,20 @@ def create_slot(
         f"{start_ist.isoformat(timespec='seconds')}"
     )
 
+    desired_status = "BLACKOUT" if blackout else "AVAILABLE"
+
     item = {
         "slotId": slot_id,
         "doctorId": int(availability["doctor_id"]),
         "hospitalId": int(availability["hospital_id"]),
-        "consultationTypeId": int(
-            availability["consultation_type_id"]
-        ),
-        "consultationFee": str(
-            availability.get("consultation_fee", "0.00")
-        ),
+        "consultationTypeId": int(availability["consultation_type_id"]),
+        "consultationFee": str(availability.get("consultation_fee", "0.00")),
         "capacity": int(availability.get("capacity", 1)),
         "bookedCount": 0,
         "slotTime": start_ist.isoformat(timespec="seconds"),
         "endTime": end_ist.isoformat(timespec="seconds"),
-        "status": "BLACKOUT" if blocked_by_blackout else "AVAILABLE",
+        "status": desired_status,
+        "isBlackout": bool(blackout),
         "version": 1,
         "timezone": "Asia/Kolkata",
     }
@@ -219,40 +219,45 @@ def create_slot(
             Item=item,
             ConditionExpression="attribute_not_exists(slotId)",
         )
-        return "blackout_created" if blocked_by_blackout else "created"
+        return "created_blackout" if blackout else "created"
 
     except ClientError as error:
-        if error.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+        code = error.response.get("Error", {}).get("Code")
+        if code != "ConditionalCheckFailedException":
+            logger.exception(
+                "DynamoDB put_item failed for slotId=%s table=%s",
+                slot_id,
+                slots_table.name,
+            )
             raise
 
-        # Re-materialization should reflect a blackout being added or removed,
-        # but must never reset a slot that already has a booking.
-        desired_status = "BLACKOUT" if blocked_by_blackout else "AVAILABLE"
+        # Existing slot: update only blackout/status metadata if it has no
+        # bookings. Never reset capacity, bookedCount, or other booking data.
         try:
             slots_table.update_item(
                 Key={"slotId": slot_id},
-                UpdateExpression="SET #status = :desired",
-                ConditionExpression=(
-                    "attribute_exists(slotId) AND "
-                    "(attribute_not_exists(bookedCount) OR bookedCount = :zero) AND "
-                    "(#status = :available OR #status = :blackout)"
-                ),
+                UpdateExpression="SET #status = :status, isBlackout = :blackout",
+                ConditionExpression="attribute_not_exists(bookedCount) OR bookedCount = :zero",
                 ExpressionAttributeNames={"#status": "status"},
                 ExpressionAttributeValues={
-                    ":desired": desired_status,
+                    ":status": desired_status,
+                    ":blackout": bool(blackout),
                     ":zero": 0,
-                    ":available": "AVAILABLE",
-                    ":blackout": "BLACKOUT",
                 },
             )
         except ClientError as update_error:
-            if update_error.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            update_code = update_error.response.get("Error", {}).get("Code")
+            if update_code != "ConditionalCheckFailedException":
+                logger.exception(
+                    "DynamoDB update_item failed for existing slotId=%s",
+                    slot_id,
+                )
                 raise
 
-        return "blackout" if blocked_by_blackout else "duplicate"
+        return "duplicate_blackout" if blackout else "duplicate"
 
 
-def materialize_day(connection, slots_table, target_date, doctor_id=None):
+def materialize_day(connection, slots_table, target_date):
 
     # Python: Monday=0, Sunday=6.
     # Database: Sunday=0, Saturday=6.
@@ -261,8 +266,7 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
     availability_records = get_availability(
         connection,
         day_of_week,
-        target_date,
-        doctor_id
+        target_date
     )
     logger.info(
         "Materializing date=%s day_of_week=%s availability_records=%s",
@@ -272,8 +276,7 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
     results = {
         "created": 0,
         "duplicates": 0,
-        "blackouts": 0,
-        "blackout_slots_created": 0,
+        "blackout_slots": 0,
         "availability_records": len(availability_records),
     }
 
@@ -350,18 +353,15 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
                 connection
             )
 
-            if result == "created":
+            if result in {"created", "created_blackout"}:
                 results["created"] += 1
+                if result == "created_blackout":
+                    results["blackout_slots"] += 1
 
-            elif result == "duplicate":
+            elif result in {"duplicate", "duplicate_blackout"}:
                 results["duplicates"] += 1
-
-            elif result == "blackout_created":
-                results["blackout_slots_created"] += 1
-                results["blackouts"] += 1
-
-            elif result == "blackout":
-                results["blackouts"] += 1
+                if result == "duplicate_blackout":
+                    results["blackout_slots"] += 1
 
             current_start = (
                 current_end + buffer_duration
@@ -399,13 +399,16 @@ def lambda_handler(event, context):
         start_day.isoformat(), days, table_name
     )
 
-    connection = get_db_connection()
+    try:
+        connection = get_db_connection()
+    except Exception:
+        logger.exception("Could not connect to RDS for slot materialization")
+        raise
 
     total_results = {
         "created": 0,
         "duplicates": 0,
-        "blackouts": 0,
-        "blackout_slots_created": 0,
+        "blackout_slots": 0,
         "availability_records": 0,
     }
 

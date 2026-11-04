@@ -3,7 +3,6 @@ import logging
 import os
 import uuid
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
 import boto3
 import pymysql
@@ -492,30 +491,6 @@ def consultation_types(connection, doctor_id, method, data, item_id=None):
     return response(405, {"message": "Method not allowed"})
 
 
-def refresh_slots(connection, doctor_id, days=30):
-    """Generate this doctor's DynamoDB slots right after an availability change.
-
-    The daily scheduler still runs for everyone; this makes the doctor's own
-    change visible immediately. Failures are logged and never block the save.
-    """
-    try:
-        from lambdas.slot_materializer import slot_materializer as materializer
-
-        table_name = os.environ.get("SLOTS_TABLE_NAME")
-        if not table_name:
-            logger.error("SLOTS_TABLE_NAME is not configured; slots not refreshed")
-            return
-        table = dynamodb.Table(table_name)
-        start_day = datetime.now(ZoneInfo("Asia/Kolkata")).date()
-        for offset in range(days):
-            materializer.materialize_day(
-                connection, table, start_day + timedelta(days=offset),
-                doctor_id=int(doctor_id),
-            )
-    except Exception:
-        logger.exception("Slot refresh failed for doctor_id=%s", doctor_id)
-
-
 def availability(connection, doctor_id, method, data, item_id=None):
     with connection.cursor() as cursor:
         if method == "GET":
@@ -591,7 +566,6 @@ def availability(connection, doctor_id, method, data, item_id=None):
                  data.get("effective_until"), bool(data.get("is_active", True))),
             )
             connection.commit()
-            refresh_slots(connection, doctor_id)
             return response(201, {
                 "message": "Availability created",
                 "availability_id": int(cursor.lastrowid),
@@ -630,7 +604,6 @@ def availability(connection, doctor_id, method, data, item_id=None):
                     connection.rollback()
                     return response(404, {"message": "Availability not found"})
             connection.commit()
-            refresh_slots(connection, doctor_id)
             return response(200, {"message": "Availability updated"})
 
         if method == "DELETE" and item_id:
@@ -646,7 +619,6 @@ def availability(connection, doctor_id, method, data, item_id=None):
                 connection.rollback()
                 return response(404, {"message": "Availability not found"})
             connection.commit()
-            refresh_slots(connection, doctor_id)
             return response(200, {"message": "Availability deleted"})
 
     return response(405, {"message": "Method not allowed"})
@@ -785,45 +757,6 @@ def create_photo_upload(connection, doctor_id, data):
     })
 
 
-
-def _as_ist_wall_datetime(value):
-    """Convert MySQL/DynamoDB date-time values to naive IST wall time.
-
-    RDS blackout datetimes are stored as local IST values. DynamoDB slot
-    timestamps may be ISO strings with an explicit +05:30 offset.
-    """
-    if isinstance(value, datetime):
-        parsed = value
-    elif value:
-        text_value = str(value).strip().replace("Z", "+00:00")
-        parsed = datetime.fromisoformat(text_value.replace(" ", "T", 1))
-    else:
-        return None
-
-    # Keep the local wall-clock value when an explicit timezone is present.
-    # The application stores schedule/blackout values in Asia/Kolkata.
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None)
-    return parsed
-
-
-def _slot_overlaps_blackout(slot, blackout):
-    """Return True only when this slot overlaps a blackout at the same hospital."""
-    try:
-        if int(slot.get("hospitalId", 0)) != int(blackout.get("hospital_id", 0)):
-            return False
-        slot_start = _as_ist_wall_datetime(slot.get("slotTime"))
-        slot_end = _as_ist_wall_datetime(slot.get("endTime"))
-        blackout_start = _as_ist_wall_datetime(blackout.get("start_at_ist"))
-        blackout_end = _as_ist_wall_datetime(blackout.get("end_at_ist"))
-        if not all((slot_start, slot_end, blackout_start, blackout_end)):
-            return False
-        return slot_start < blackout_end and slot_end > blackout_start
-    except (TypeError, ValueError, OverflowError):
-        logger.exception("Could not compare slot and blackout timestamps")
-        return False
-
-
 def doctor_schedule(connection, doctor_id, query_params):
     """Return this doctor's generated slots for one IST calendar date."""
     date_value = (query_params or {}).get("date")
@@ -892,12 +825,14 @@ def doctor_schedule(connection, doctor_id, query_params):
             )
             blackouts = cursor.fetchall()
 
-        # Mark only slots that overlap a blackout at the same hospital.
-        # Use parsed IST datetimes instead of string comparisons so timezone
-        # suffixes and MySQL datetime formatting cannot mark unrelated slots.
+        # Mark any previously materialized slots that overlap a blackout.
         for slot in slots:
+            slot_start = str(slot.get("slotTime", ""))[:19].replace("T", " ")
+            slot_end = str(slot.get("endTime", ""))[:19].replace("T", " ")
             slot["isBlackout"] = any(
-                _slot_overlaps_blackout(slot, blackout)
+                int(slot.get("hospitalId", 0)) == int(blackout.get("hospital_id", 0))
+                and slot_start < str(blackout.get("end_at_ist", ""))
+                and slot_end > str(blackout.get("start_at_ist", ""))
                 for blackout in blackouts
             )
             if slot["isBlackout"]:
