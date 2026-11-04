@@ -1,0 +1,13 @@
+[Unit]
+Description=MediSlot Flask Doctor Dashboard
+After=network.target
+[Service]
+User=ec2-user
+Group=nginx
+WorkingDirectory=/opt/medislot/frontend
+EnvironmentFile=/etc/medislot/web.env
+ExecStart=/opt/medislot/frontend/.venv/bin/gunicorn --workers 2 --threads 2 --bind 127.0.0.1:8000 --timeout 60 'app:create_app()'
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
