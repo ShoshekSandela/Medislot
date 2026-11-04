@@ -111,6 +111,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       Description: Execution role for the MediSlot doctor Lambda
+
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -120,9 +121,11 @@ Resources:
                 - lambda.amazonaws.com
             Action:
               - sts:AssumeRole
+
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
         - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
       Policies:
         - PolicyName: ReadDatabaseCredentials
           PolicyDocument:
@@ -133,11 +136,22 @@ Resources:
                   - secretsmanager:GetSecretValue
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:rds!*'
+
               - Effect: Allow
                 Action:
                   - s3:PutObject
                 Resource:
                   - !Sub '${ProfilePhotosBucketArn}/doctors/*'
+
+        - PolicyName: DoctorDynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots'
 
   # 4. Patient Lambda execution role
   PatientLambdaRole:
