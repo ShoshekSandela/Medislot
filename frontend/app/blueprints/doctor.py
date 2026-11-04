@@ -92,29 +92,67 @@ def dashboard():
 @bp.route("/profile",methods=["GET","POST"])
 @doctor_required
 def profile():
- if request.method=="POST":
-  f=request.form; body={}
-  for k in ("first_name","last_name","qualification"):
-   v=f.get(k,"").strip()
-   if v!=session.get("profile",{}).get(k): body[k]=v
-  try:
-   selected_ids=[]
-   for value in f.getlist("specialisation_ids"):
-    selected_ids.append(int(value))
-   body["specialisation_ids"]=selected_ids
-  except ValueError:
-   flash("Invalid specialisation selection.","error")
-   return redirect(url_for("doctor.profile"))
-  try:
-   exp=int(f.get("experience_years",0));
-   if not 0<=exp<=100: raise ValueError()
-   if exp!=session.get("profile",{}).get("experience_years"): body["experience_years"]=exp
-   if body: put("/doctors/profile",body); flash("Profile updated.","success")
-  except (ValueError,APIError) as e: flash(getattr(e,"message","Experience must be 0–100"),"error")
-  return redirect(url_for("doctor.profile"))
- p,err=safe_call(get,"/doctors/profile"); p=p or {}; session["profile"]=p; session["doctor_name"]=(p.get("first_name","")+" "+p.get("last_name","")).strip() or "Doctor"; session["profile_status"]=p.get("profile_status","—")
- specialisations,spec_err=safe_call(get,"/doctors/specialisations")
- return page("My profile","profile",profile=p,specialisations=specialisations if isinstance(specialisations,list) else [],error=err or spec_err)
+    if request.method == "POST":
+        f = request.form
+        body = {}
+
+        for key in ("first_name", "last_name", "qualification"):
+            value = f.get(key, "").strip()
+            if value != session.get("profile", {}).get(key):
+                body[key] = value
+
+        try:
+            experience = int(f.get("experience_years", 0))
+            if not 0 <= experience <= 100:
+                raise ValueError("Experience must be between 0 and 100")
+
+            if experience != session.get("profile", {}).get("experience_years"):
+                body["experience_years"] = experience
+
+            # Checkbox values are submitted as a list. An empty list means
+            # the doctor intentionally cleared all selected specialisations.
+            raw_ids = f.getlist("specialisation_ids")
+            selected_ids = []
+            for value in raw_ids:
+                ident = int(value)
+                if ident <= 0:
+                    raise ValueError("Invalid specialisation selection.")
+                selected_ids.append(ident)
+
+            body["specialisation_ids"] = sorted(set(selected_ids))
+
+            if body:
+                updated = put("/doctors/profile", body)
+                if isinstance(updated, dict):
+                    session["profile"] = updated
+                flash("Profile updated.", "success")
+        except ValueError as e:
+            flash(str(e) or "Please check the profile details.", "error")
+        except APIError as e:
+            flash(e.message, "error")
+
+        return redirect(url_for("doctor.profile"))
+
+    profile_data, profile_error = safe_call(get, "/doctors/profile")
+    profile_data = profile_data or {}
+    session["profile"] = profile_data
+    session["doctor_name"] = (
+        (profile_data.get("first_name", "") + " " +
+         profile_data.get("last_name", "")).strip() or "Doctor"
+    )
+    session["profile_status"] = profile_data.get("profile_status", "—")
+
+    specialisations, specialisation_error = safe_call(
+        get, "/doctors/specialisations"
+    )
+
+    return page(
+        "My profile",
+        "profile",
+        profile=profile_data,
+        specialisations=specialisations if isinstance(specialisations, list) else [],
+        error=profile_error or specialisation_error
+    )
 
 @bp.post("/profile/photo")
 @doctor_required
