@@ -175,16 +175,16 @@ def create_slot(
     connection
 ):
 
-    if is_blackout(
+    blocked_by_blackout = is_blackout(
         connection,
         availability["doctor_id"],
         availability["hospital_id"],
         start_ist,
         end_ist,
-    ):
-        return "blackout"
+    )
 
-    # Deterministic ID prevents duplicate slots.
+    # Deterministic ID prevents duplicate slots. Blackout-overlapping slots
+    # are also materialized, but carry BLACKOUT status and must not be bookable.
     slot_id = (
         f"{availability['doctor_id']}#"
         f"{availability['hospital_id']}#"
@@ -206,7 +206,7 @@ def create_slot(
         "bookedCount": 0,
         "slotTime": start_ist.isoformat(timespec="seconds"),
         "endTime": end_ist.isoformat(timespec="seconds"),
-        "status": "AVAILABLE",
+        "status": "BLACKOUT" if blocked_by_blackout else "AVAILABLE",
         "version": 1,
         "timezone": "Asia/Kolkata",
     }
@@ -216,18 +216,37 @@ def create_slot(
             Item=item,
             ConditionExpression="attribute_not_exists(slotId)",
         )
-
-        return "created"
+        return "blackout_created" if blocked_by_blackout else "created"
 
     except ClientError as error:
+        if error.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+            raise
 
-        if (
-            error.response.get("Error", {}).get("Code")
-            == "ConditionalCheckFailedException"
-        ):
-            return "duplicate"
+        # Re-materialization should reflect a blackout being added or removed,
+        # but must never reset a slot that already has a booking.
+        desired_status = "BLACKOUT" if blocked_by_blackout else "AVAILABLE"
+        try:
+            slots_table.update_item(
+                Key={"slotId": slot_id},
+                UpdateExpression="SET #status = :desired",
+                ConditionExpression=(
+                    "attribute_exists(slotId) AND "
+                    "(attribute_not_exists(bookedCount) OR bookedCount = :zero) AND "
+                    "(#status = :available OR #status = :blackout)"
+                ),
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={
+                    ":desired": desired_status,
+                    ":zero": 0,
+                    ":available": "AVAILABLE",
+                    ":blackout": "BLACKOUT",
+                },
+            )
+        except ClientError as update_error:
+            if update_error.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                raise
 
-        raise
+        return "blackout" if blocked_by_blackout else "duplicate"
 
 
 def materialize_day(connection, slots_table, target_date):
@@ -250,6 +269,7 @@ def materialize_day(connection, slots_table, target_date):
         "created": 0,
         "duplicates": 0,
         "blackouts": 0,
+        "blackout_slots_created": 0,
         "availability_records": len(availability_records),
     }
 
@@ -332,6 +352,10 @@ def materialize_day(connection, slots_table, target_date):
             elif result == "duplicate":
                 results["duplicates"] += 1
 
+            elif result == "blackout_created":
+                results["blackout_slots_created"] += 1
+                results["blackouts"] += 1
+
             elif result == "blackout":
                 results["blackouts"] += 1
 
@@ -377,6 +401,7 @@ def lambda_handler(event, context):
         "created": 0,
         "duplicates": 0,
         "blackouts": 0,
+        "blackout_slots_created": 0,
         "availability_records": 0,
     }
 
