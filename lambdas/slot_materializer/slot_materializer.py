@@ -6,6 +6,7 @@ Day-of-week follows the database convention:
 """
 
 import json
+import logging
 import os
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -14,6 +15,9 @@ import boto3
 import pymysql
 from botocore.exceptions import ClientError
 
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 secrets_client = boto3.client("secretsmanager")
 dynamodb = boto3.resource("dynamodb")
@@ -237,6 +241,10 @@ def materialize_day(connection, slots_table, target_date):
         day_of_week,
         target_date
     )
+    logger.info(
+        "Materializing date=%s day_of_week=%s availability_records=%s",
+        target_date.isoformat(), day_of_week, len(availability_records)
+    )
 
     results = {
         "created": 0,
@@ -331,6 +339,7 @@ def materialize_day(connection, slots_table, target_date):
                 current_end + buffer_duration
             )
 
+    logger.info("Materialized date=%s results=%s", target_date.isoformat(), results)
     return results
 
 
@@ -349,8 +358,17 @@ def lambda_handler(event, context):
             })
         }
 
-    slots_table = dynamodb.Table(
-        os.environ["SLOTS_TABLE_NAME"]
+    table_name = os.environ.get("SLOTS_TABLE_NAME")
+    if not table_name:
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"message": "SLOTS_TABLE_NAME is not configured"})
+        }
+
+    slots_table = dynamodb.Table(table_name)
+    logger.info(
+        "Starting slot materialization start_date=%s days=%s table=%s",
+        start_day.isoformat(), days, table_name
     )
 
     connection = get_db_connection()
@@ -379,6 +397,7 @@ def lambda_handler(event, context):
             for key in total_results:
                 total_results[key] += day_results[key]
 
+        logger.info("Slot materialization completed: %s", total_results)
         return {
             "statusCode": 200,
             "body": json.dumps({
