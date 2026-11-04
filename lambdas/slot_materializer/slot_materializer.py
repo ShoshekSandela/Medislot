@@ -97,7 +97,7 @@ def mysql_time_to_time(value):
     )
 
 
-def get_availability(connection, day_of_week, target_date):
+def get_availability(connection, day_of_week, target_date, doctor_id=None):
 
     sql = """
         SELECT
@@ -125,12 +125,13 @@ def get_availability(connection, day_of_week, target_date):
               OR da.effective_until >= %s
           )
     """
+    params = [day_of_week, target_date, target_date]
+    if doctor_id is not None:
+        sql += " AND da.doctor_id = %s"
+        params.append(int(doctor_id))
 
     with connection.cursor() as cursor:
-        cursor.execute(
-            sql,
-            (day_of_week, target_date, target_date)
-        )
+        cursor.execute(sql, tuple(params))
 
         return cursor.fetchall()
 
@@ -257,7 +258,7 @@ def create_slot(
         return "duplicate_blackout" if blackout else "duplicate"
 
 
-def materialize_day(connection, slots_table, target_date):
+def materialize_day(connection, slots_table, target_date, doctor_id=None):
 
     # Python: Monday=0, Sunday=6.
     # Database: Sunday=0, Saturday=6.
@@ -266,7 +267,8 @@ def materialize_day(connection, slots_table, target_date):
     availability_records = get_availability(
         connection,
         day_of_week,
-        target_date
+        target_date,
+        doctor_id=doctor_id
     )
     logger.info(
         "Materializing date=%s day_of_week=%s availability_records=%s",
@@ -277,8 +279,10 @@ def materialize_day(connection, slots_table, target_date):
         "created": 0,
         "duplicates": 0,
         "blackout_slots": 0,
+        "deactivated": 0,
         "availability_records": len(availability_records),
     }
+    generated_slot_ids = set()
 
     buffer_minutes = int(
         os.environ.get("SLOT_BUFFER_MINUTES", "15")
@@ -345,6 +349,13 @@ def materialize_day(connection, slots_table, target_date):
                 current_start + consultation_duration
             )
 
+            slot_id = (
+                f"{availability['doctor_id']}#"
+                f"{availability['hospital_id']}#"
+                f"{availability['consultation_type_id']}#"
+                f"{current_start.isoformat(timespec='seconds')}"
+            )
+            generated_slot_ids.add(slot_id)
             result = create_slot(
                 slots_table,
                 availability,
@@ -366,6 +377,42 @@ def materialize_day(connection, slots_table, target_date):
             current_start = (
                 current_end + buffer_duration
             )
+
+    # For targeted doctor refreshes, deactivate obsolete unbooked slots for this date.
+    # Existing booked slots are never changed or deleted.
+    if doctor_id is not None:
+        scan_filter = (
+            Attr("doctorId").eq(str(doctor_id))
+            & Attr("slotTime").begins_with(target_date.isoformat())
+        )
+        page = slots_table.scan(FilterExpression=scan_filter)
+        existing_items = list(page.get("Items", []))
+        while page.get("LastEvaluatedKey"):
+            page = slots_table.scan(
+                FilterExpression=scan_filter,
+                ExclusiveStartKey=page["LastEvaluatedKey"],
+            )
+            existing_items.extend(page.get("Items", []))
+
+        for existing in existing_items:
+            if existing.get("slotId") in generated_slot_ids:
+                continue
+            try:
+                slots_table.update_item(
+                    Key={"slotId": existing["slotId"]},
+                    UpdateExpression="SET #status = :inactive, isBlackout = :false",
+                    ConditionExpression="attribute_not_exists(bookedCount) OR bookedCount = :zero",
+                    ExpressionAttributeNames={"#status": "status"},
+                    ExpressionAttributeValues={
+                        ":inactive": "INACTIVE",
+                        ":false": False,
+                        ":zero": 0,
+                    },
+                )
+                results["deactivated"] += 1
+            except ClientError as error:
+                if error.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                    raise
 
     logger.info("Materialized date=%s results=%s", target_date.isoformat(), results)
     return results
@@ -394,9 +441,18 @@ def lambda_handler(event, context):
         }
 
     slots_table = dynamodb.Table(table_name)
+    doctor_id = event.get("doctor_id")
+    if doctor_id is not None:
+        try:
+            doctor_id = int(doctor_id)
+            if doctor_id <= 0:
+                raise ValueError()
+        except (TypeError, ValueError):
+            return {"statusCode": 400, "body": json.dumps({"message": "doctor_id must be a positive integer"})}
+
     logger.info(
-        "Starting slot materialization start_date=%s days=%s table=%s",
-        start_day.isoformat(), days, table_name
+        "Starting slot materialization start_date=%s days=%s doctor_id=%s table=%s",
+        start_day.isoformat(), days, doctor_id, table_name
     )
 
     try:
@@ -409,6 +465,7 @@ def lambda_handler(event, context):
         "created": 0,
         "duplicates": 0,
         "blackout_slots": 0,
+        "deactivated": 0,
         "availability_records": 0,
     }
 
@@ -423,7 +480,8 @@ def lambda_handler(event, context):
             day_results = materialize_day(
                 connection,
                 slots_table,
-                target_date
+                target_date,
+                doctor_id=doctor_id
             )
 
             for key in total_results:
@@ -436,6 +494,7 @@ def lambda_handler(event, context):
                 "message": "IST slot materialisation completed",
                 "start_date": str(start_day),
                 "days": days,
+                "doctor_id": doctor_id,
                 "timezone": "Asia/Kolkata",
                 "results": total_results
             })

@@ -163,6 +163,7 @@ Resources:
           DB_NAME: !Ref DatabaseName
           PROFILE_PHOTOS_BUCKET: !Ref ProfilePhotosBucketName
           SLOTS_TABLE_NAME: !Ref SlotsTableName
+          SLOT_MATERIALIZER_FUNCTION_NAME: !Sub medislot-${Environment}-slot-materializer
       Tags:
         - Key: Project
           Value: MediSlot

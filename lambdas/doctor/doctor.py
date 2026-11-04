@@ -14,6 +14,7 @@ logger.setLevel(logging.INFO)
 secrets_client = boto3.client("secretsmanager")
 s3_client = boto3.client("s3")
 dynamodb = boto3.resource("dynamodb")
+lambda_client = boto3.client("lambda")
 
 
 def response(status, data):
@@ -86,6 +87,39 @@ def doctor_id_from_auth(connection, profile_id):
         return value if value > 0 else None
     except (TypeError, ValueError):
         return None
+
+
+
+
+def refresh_generated_slots(doctor_id, start_date=None, days=30):
+    """Synchronously regenerate this doctor's slots for the requested IST date window."""
+    function_name = os.environ.get("SLOT_MATERIALIZER_FUNCTION_NAME")
+    if not function_name:
+        logger.error("SLOT_MATERIALIZER_FUNCTION_NAME is not configured")
+        return {"status": "not_configured", "message": "Slot materializer function name is missing"}
+
+    payload = {"doctor_id": int(doctor_id), "days": int(days)}
+    if start_date:
+        payload["start_date"] = str(start_date)[:10]
+
+    try:
+        result = lambda_client.invoke(
+            FunctionName=function_name,
+            InvocationType="RequestResponse",
+            Payload=json.dumps(payload).encode("utf-8"),
+        )
+        raw = result["Payload"].read()
+        body = json.loads(raw.decode("utf-8") or "{}")
+        if result.get("FunctionError"):
+            logger.error("Slot materializer invocation failed: %s", body)
+            return {"status": "failed", "details": body}
+        if int(body.get("statusCode", 500)) >= 400:
+            logger.error("Slot materializer returned an error: %s", body)
+            return {"status": "failed", "details": body}
+        return {"status": "completed", "details": body}
+    except Exception as exc:
+        logger.exception("Could not invoke slot materializer")
+        return {"status": "failed", "message": str(exc)}
 
 
 def get_profile(connection, doctor_id):
@@ -565,10 +599,17 @@ def availability(connection, doctor_id, method, data, item_id=None):
                  data["start_time"], data["end_time"], data["effective_from"],
                  data.get("effective_until"), bool(data.get("is_active", True))),
             )
+            availability_id = int(cursor.lastrowid)
             connection.commit()
+            effective_start = max(
+                datetime.now().date(),
+                datetime.strptime(str(data["effective_from"]), "%Y-%m-%d").date(),
+            ).isoformat()
+            generation = refresh_generated_slots(doctor_id, effective_start, 30)
             return response(201, {
                 "message": "Availability created",
-                "availability_id": int(cursor.lastrowid),
+                "availability_id": availability_id,
+                "slot_generation": generation,
             })
 
         if method == "PUT" and item_id:
@@ -604,7 +645,8 @@ def availability(connection, doctor_id, method, data, item_id=None):
                     connection.rollback()
                     return response(404, {"message": "Availability not found"})
             connection.commit()
-            return response(200, {"message": "Availability updated"})
+            generation = refresh_generated_slots(doctor_id, datetime.now().date().isoformat(), 30)
+            return response(200, {"message": "Availability updated", "slot_generation": generation})
 
         if method == "DELETE" and item_id:
             cursor.execute(
@@ -619,7 +661,8 @@ def availability(connection, doctor_id, method, data, item_id=None):
                 connection.rollback()
                 return response(404, {"message": "Availability not found"})
             connection.commit()
-            return response(200, {"message": "Availability deleted"})
+            generation = refresh_generated_slots(doctor_id, datetime.now().date().isoformat(), 30)
+            return response(200, {"message": "Availability deleted", "slot_generation": generation})
 
     return response(405, {"message": "Method not allowed"})
 
@@ -672,26 +715,40 @@ def blackouts(connection, doctor_id, method, data, item_id=None):
                 (doctor_id, hospital_id, data["start_at_ist"],
                  data["end_at_ist"], data.get("reason")),
             )
+            blackout_id = int(cursor.lastrowid)
             connection.commit()
+            start_day = str(data["start_at_ist"])[:10]
+            end_day = str(data["end_at_ist"])[:10]
+            try:
+                span = (datetime.strptime(end_day, "%Y-%m-%d").date() - datetime.strptime(start_day, "%Y-%m-%d").date()).days + 1
+            except ValueError:
+                span = 1
+            generation = refresh_generated_slots(doctor_id, start_day, max(1, min(span, 90)))
             return response(201, {
                 "message": "Blackout created",
-                "blackout_id": int(cursor.lastrowid),
+                "blackout_id": blackout_id,
+                "slot_generation": generation,
             })
 
         if method == "DELETE" and item_id:
             cursor.execute(
-                """
-                DELETE FROM doctor_blackouts
-                WHERE blackout_id = %s AND doctor_id = %s
-                """,
+                "SELECT start_at_ist, end_at_ist FROM doctor_blackouts WHERE blackout_id = %s AND doctor_id = %s",
                 (item_id, doctor_id),
             )
-            deleted_rows = cursor.rowcount
-            if deleted_rows == 0:
+            blackout_row = cursor.fetchone()
+            if not blackout_row:
                 connection.rollback()
                 return response(404, {"message": "Blackout not found"})
+            cursor.execute(
+                "DELETE FROM doctor_blackouts WHERE blackout_id = %s AND doctor_id = %s",
+                (item_id, doctor_id),
+            )
             connection.commit()
-            return response(200, {"message": "Blackout deleted"})
+            start_day = str(blackout_row["start_at_ist"])[:10]
+            end_day = str(blackout_row["end_at_ist"])[:10]
+            span = (datetime.strptime(end_day, "%Y-%m-%d").date() - datetime.strptime(start_day, "%Y-%m-%d").date()).days + 1
+            generation = refresh_generated_slots(doctor_id, start_day, max(1, min(span, 90)))
+            return response(200, {"message": "Blackout deleted", "slot_generation": generation})
 
     return response(405, {"message": "Method not allowed"})
 
