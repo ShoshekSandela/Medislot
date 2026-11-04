@@ -117,7 +117,17 @@ def photo():
  blob=f.read(5*1024*1024+1)
  if len(blob)>5*1024*1024: flash("Photo must be 5 MB or smaller.","error"); return redirect(url_for("doctor.profile"))
  try:
-  name=secure_filename(f.filename) or "profile."+ALLOWED[content]; result=post("/doctors/photo",{"fileName":name,"contentType":content}); upload_to_presigned(result["uploadUrl"],content,blob); flash("Photo uploaded. It will appear after the profile refresh.","success")
+  name=secure_filename(f.filename) or "profile."+ALLOWED[content]
+  result=post("/doctors/photo",{"fileName":name,"contentType":content})
+  upload_to_presigned(result["uploadUrl"],content,blob)
+  # Fetch the profile again after the S3 PUT so the page receives a fresh
+  # pre-signed GET URL for the newly uploaded object.
+  refreshed=get("/doctors/profile")
+  session["profile"]=refreshed or {}
+  if refreshed and refreshed.get("profile_photo_display_url"):
+   flash("Profile photo uploaded successfully.","success")
+  else:
+   flash("Photo was uploaded, but the display URL is unavailable. Check the Doctor Lambda S3 read permission and bucket configuration.","warning")
  except (APIError,KeyError) as e: flash(getattr(e,"message","Photo upload failed"),"error")
  return redirect(url_for("doctor.profile"))
 

@@ -108,7 +108,31 @@ def get_profile(connection, doctor_id):
             """,
             (doctor_id,),
         )
-        return cursor.fetchone()
+        profile = cursor.fetchone()
+
+    # profile_photo_url stores the private S3 object key, not a browser URL.
+    # Create a short-lived GET URL only after confirming that the object exists.
+    if profile and profile.get("profile_photo_url"):
+        bucket = os.environ.get("PROFILE_PHOTOS_BUCKET")
+        object_key = profile["profile_photo_url"]
+        if bucket:
+            try:
+                s3_client.head_object(Bucket=bucket, Key=object_key)
+                profile["profile_photo_display_url"] = s3_client.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": bucket, "Key": object_key},
+                    ExpiresIn=3600,
+                )
+            except Exception:
+                logger.exception("Could not create/read doctor profile photo URL")
+                profile["profile_photo_display_url"] = None
+        else:
+            logger.error("PROFILE_PHOTOS_BUCKET is not configured")
+            profile["profile_photo_display_url"] = None
+    elif profile:
+        profile["profile_photo_display_url"] = None
+
+    return profile
 
 
 def list_doctors(connection):
