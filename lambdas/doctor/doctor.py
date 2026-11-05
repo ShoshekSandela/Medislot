@@ -668,19 +668,20 @@ def availability(connection, doctor_id, method, data, item_id=None):
                 "Availability create step 3/7: validating consultation type doctor_id=%s consultation_type_id=%s",
                 doctor_id, consultation_type_id,
             )
+            # consultation_types is a shared catalog in the deployed RDS schema;
+            # it does not contain doctor_id. Validate only that the selected type exists and is active.
             cursor.execute(
                 """
                 SELECT 1
                 FROM consultation_types
                 WHERE consultation_type_id = %s
                   AND is_active = TRUE
-                  AND (doctor_id = %s OR doctor_id IS NULL)
                 LIMIT 1
                 """,
-                (consultation_type_id, doctor_id),
+                (consultation_type_id,),
             )
             if not cursor.fetchone():
-                return response(400, {"message": "Consultation type does not belong to this doctor"})
+                return response(400, {"message": "Consultation type not found or inactive"})
             logger.info("Availability create step 4/7: inserting availability record into RDS")
             cursor.execute(
                 """
@@ -760,17 +761,17 @@ def availability(connection, doctor_id, method, data, item_id=None):
             )
             if not cursor.fetchone():
                 return response(400, {"message": "Doctor is not assigned to this hospital"})
+            # consultation_types is shared in the deployed RDS schema; no doctor_id column exists.
             cursor.execute(
                 """
                 SELECT 1 FROM consultation_types
                 WHERE consultation_type_id = %s AND is_active = TRUE
-                  AND (doctor_id = %s OR doctor_id IS NULL)
                 LIMIT 1
                 """,
-                (merged["consultation_type_id"], doctor_id),
+                (merged["consultation_type_id"],),
             )
             if not cursor.fetchone():
-                return response(400, {"message": "Consultation type does not belong to this doctor"})
+                return response(400, {"message": "Consultation type not found or inactive"})
 
             updates = {key: merged[key] for key in updates}
 
