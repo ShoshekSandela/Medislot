@@ -15,7 +15,6 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 
-@log_execution
 def log_execution(function):
     """Log entry, successful completion, duration, and exceptions without logging sensitive arguments."""
     @functools.wraps(function)
