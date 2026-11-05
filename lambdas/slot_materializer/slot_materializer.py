@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 import boto3
 import pymysql
+from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
 
 
@@ -238,14 +239,21 @@ def create_slot(
             slots_table.update_item(
                 Key={"slotId": slot_id},
                 UpdateExpression=(
-                    "SET #status = :status, isBlackout = :blackout, "
-                    "hospitalId = :hospital_id, consultationTypeId = :consultation_type_id, "
-                    "consultationFee = :fee, capacity = :capacity, "
+                    "SET #status = :status, #is_blackout = :blackout, "
+                    "hospitalId = :hospital_id, "
+                    "consultationTypeId = :consultation_type_id, "
+                    "consultationFee = :fee, #capacity = :capacity, "
                     "slotTime = :slot_time, endTime = :end_time, "
                     "timezone = :timezone"
                 ),
-                ConditionExpression="attribute_not_exists(bookedCount) OR bookedCount = :zero",
-                ExpressionAttributeNames={"#status": "status"},
+                ConditionExpression=(
+                    "attribute_not_exists(bookedCount) OR bookedCount = :zero"
+                ),
+                ExpressionAttributeNames={
+                    "#status": "status",
+                    "#is_blackout": "isBlackout",
+                    "#capacity": "capacity",
+                },
                 ExpressionAttributeValues={
                     ":status": desired_status,
                     ":blackout": bool(blackout),
@@ -413,9 +421,14 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
             try:
                 slots_table.update_item(
                     Key={"slotId": existing["slotId"]},
-                    UpdateExpression="SET #status = :inactive, isBlackout = :false",
-                    ConditionExpression="attribute_not_exists(bookedCount) OR bookedCount = :zero",
-                    ExpressionAttributeNames={"#status": "status"},
+                    UpdateExpression="SET #status = :inactive, #is_blackout = :false",
+                    ConditionExpression=(
+                        "attribute_not_exists(bookedCount) OR bookedCount = :zero"
+                    ),
+                    ExpressionAttributeNames={
+                        "#status": "status",
+                        "#is_blackout": "isBlackout",
+                    },
                     ExpressionAttributeValues={
                         ":inactive": "INACTIVE",
                         ":false": False,
