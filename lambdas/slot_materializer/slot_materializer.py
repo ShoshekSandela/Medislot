@@ -237,12 +237,25 @@ def create_slot(
         try:
             slots_table.update_item(
                 Key={"slotId": slot_id},
-                UpdateExpression="SET #status = :status, isBlackout = :blackout",
+                UpdateExpression=(
+                    "SET #status = :status, isBlackout = :blackout, "
+                    "hospitalId = :hospital_id, consultationTypeId = :consultation_type_id, "
+                    "consultationFee = :fee, capacity = :capacity, "
+                    "slotTime = :slot_time, endTime = :end_time, "
+                    "timezone = :timezone"
+                ),
                 ConditionExpression="attribute_not_exists(bookedCount) OR bookedCount = :zero",
                 ExpressionAttributeNames={"#status": "status"},
                 ExpressionAttributeValues={
                     ":status": desired_status,
                     ":blackout": bool(blackout),
+                    ":hospital_id": int(availability["hospital_id"]),
+                    ":consultation_type_id": int(availability["consultation_type_id"]),
+                    ":fee": str(availability.get("consultation_fee", "0.00")),
+                    ":capacity": int(availability.get("capacity", 1)),
+                    ":slot_time": start_ist.isoformat(timespec="seconds"),
+                    ":end_time": end_ist.isoformat(timespec="seconds"),
+                    ":timezone": "Asia/Kolkata",
                     ":zero": 0,
                 },
             )

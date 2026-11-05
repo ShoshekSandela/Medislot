@@ -3,6 +3,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import boto3
 import pymysql
@@ -15,6 +16,7 @@ secrets_client = boto3.client("secretsmanager")
 s3_client = boto3.client("s3")
 dynamodb = boto3.resource("dynamodb")
 lambda_client = boto3.client("lambda")
+IST = ZoneInfo("Asia/Kolkata")
 
 
 def response(status, data):
@@ -582,9 +584,10 @@ def availability(connection, doctor_id, method, data, item_id=None):
                 FROM consultation_types
                 WHERE consultation_type_id = %s
                   AND is_active = TRUE
+                  AND (doctor_id = %s OR doctor_id IS NULL)
                 LIMIT 1
                 """,
-                (consultation_type_id,),
+                (consultation_type_id, doctor_id),
             )
             if not cursor.fetchone():
                 return response(400, {"message": "Consultation type does not belong to this doctor"})
@@ -602,7 +605,7 @@ def availability(connection, doctor_id, method, data, item_id=None):
             availability_id = int(cursor.lastrowid)
             connection.commit()
             effective_start = max(
-                datetime.now().date(),
+                datetime.now(IST).date(),
                 datetime.strptime(str(data["effective_from"]), "%Y-%m-%d").date(),
             ).isoformat()
             generation = refresh_generated_slots(doctor_id, effective_start, 30)
@@ -628,6 +631,48 @@ def availability(connection, doctor_id, method, data, item_id=None):
                 return response(400, {"message": "No valid fields"})
 
             cursor.execute(
+                "SELECT * FROM doctor_availability WHERE availability_id = %s AND doctor_id = %s",
+                (item_id, doctor_id),
+            )
+            old_row = cursor.fetchone()
+            if not old_row:
+                return response(404, {"message": "Availability not found"})
+
+            merged = {**old_row, **updates}
+            try:
+                merged["hospital_id"] = int(merged["hospital_id"])
+                merged["consultation_type_id"] = int(merged["consultation_type_id"])
+                merged["day_of_week"] = int(merged["day_of_week"])
+            except (TypeError, ValueError):
+                return response(400, {"message": "Hospital, consultation type and weekday must be integers"})
+            if not 0 <= merged["day_of_week"] <= 6:
+                return response(400, {"message": "day_of_week must be between 0 (Sunday) and 6 (Saturday)"})
+            if str(merged["end_time"]) <= str(merged["start_time"]):
+                return response(400, {"message": "end_time must be later than start_time"})
+            if merged.get("effective_until") and str(merged["effective_until"]) < str(merged["effective_from"]):
+                return response(400, {"message": "effective_until cannot be before effective_from"})
+
+            cursor.execute(
+                "SELECT 1 FROM doctor_hospitals WHERE doctor_id = %s AND hospital_id = %s AND is_active = TRUE LIMIT 1",
+                (doctor_id, merged["hospital_id"]),
+            )
+            if not cursor.fetchone():
+                return response(400, {"message": "Doctor is not assigned to this hospital"})
+            cursor.execute(
+                """
+                SELECT 1 FROM consultation_types
+                WHERE consultation_type_id = %s AND is_active = TRUE
+                  AND (doctor_id = %s OR doctor_id IS NULL)
+                LIMIT 1
+                """,
+                (merged["consultation_type_id"], doctor_id),
+            )
+            if not cursor.fetchone():
+                return response(400, {"message": "Consultation type does not belong to this doctor"})
+
+            updates = {key: merged[key] for key in updates}
+
+            cursor.execute(
                 f"""
                 UPDATE doctor_availability
                 SET {", ".join(f"{key} = %s" for key in updates)}
@@ -645,7 +690,7 @@ def availability(connection, doctor_id, method, data, item_id=None):
                     connection.rollback()
                     return response(404, {"message": "Availability not found"})
             connection.commit()
-            generation = refresh_generated_slots(doctor_id, datetime.now().date().isoformat(), 30)
+            generation = refresh_generated_slots(doctor_id, datetime.now(IST).date().isoformat(), 30)
             return response(200, {"message": "Availability updated", "slot_generation": generation})
 
         if method == "DELETE" and item_id:
@@ -661,7 +706,7 @@ def availability(connection, doctor_id, method, data, item_id=None):
                 connection.rollback()
                 return response(404, {"message": "Availability not found"})
             connection.commit()
-            generation = refresh_generated_slots(doctor_id, datetime.now().date().isoformat(), 30)
+            generation = refresh_generated_slots(doctor_id, datetime.now(IST).date().isoformat(), 30)
             return response(200, {"message": "Availability deleted", "slot_generation": generation})
 
     return response(405, {"message": "Method not allowed"})

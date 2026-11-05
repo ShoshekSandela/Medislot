@@ -240,7 +240,22 @@ Resources:
       SecurityGroupIds:
         - !Ref EndpointSecurityGroup
 
-  # 16. CloudWatch Logs interface endpoint
+  # 16. Lambda interface endpoint: required because Doctor Lambda is in private subnets
+  # and synchronously invokes the Slot Materializer through the Lambda service API.
+  LambdaEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref MediSlotVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.lambda
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  # 17. CloudWatch Logs interface endpoint
   LogsEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:

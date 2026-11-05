@@ -233,41 +233,6 @@ Resources:
           SLOT_WINDOW_DAYS: '30'
           SLOT_BUFFER_MINUTES: '15'
 
-  SlotMaterializerSchedulerRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub medislot-${Environment}-slot-scheduler-role
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: scheduler.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: InvokeSlotMaterializer
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action: lambda:InvokeFunction
-                Resource: !GetAtt SlotMaterializerLambda.Arn
-
-  SlotMaterializerDailySchedule:
-    Type: AWS::Scheduler::Schedule
-    Properties:
-      Name: !Sub medislot-${Environment}-slot-materializer-daily
-      Description: Generate MediSlot availability slots daily using IST dates
-      State: ENABLED
-      ScheduleExpression: rate(1 day)
-      ScheduleExpressionTimezone: Asia/Kolkata
-      FlexibleTimeWindow:
-        Mode: "OFF"
-      Target:
-        Arn: !GetAtt SlotMaterializerLambda.Arn
-        RoleArn: !GetAtt SlotMaterializerSchedulerRole.Arn
-        Input: '{"days":30}'
-
   # =========================================================
   # API GATEWAY REST API
   # =========================================================
