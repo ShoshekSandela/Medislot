@@ -244,7 +244,7 @@ def create_slot(
                     "consultationTypeId = :consultation_type_id, "
                     "consultationFee = :fee, #capacity = :capacity, "
                     "slotTime = :slot_time, endTime = :end_time, "
-                    "timezone = :timezone"
+                    "#timezone = :timezone"
                 ),
                 ConditionExpression=(
                     "attribute_not_exists(bookedCount) OR bookedCount = :zero"
@@ -253,6 +253,7 @@ def create_slot(
                     "#status": "status",
                     "#is_blackout": "isBlackout",
                     "#capacity": "capacity",
+                    "#timezone": "timezone",
                 },
                 ExpressionAttributeValues={
                     ":status": desired_status,
