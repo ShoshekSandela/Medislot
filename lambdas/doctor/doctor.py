@@ -37,6 +37,8 @@ def log_execution(function):
             )
             raise
 
+    return wrapper
+
 
 secrets_client = boto3.client("secretsmanager")
 s3_client = boto3.client("s3")
