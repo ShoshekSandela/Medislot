@@ -140,6 +140,8 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:PutObject
+                  # HeadObject and presigned GetObject require s3:GetObject.
+                  - s3:GetObject
                 Resource:
                   - !Sub '${ProfilePhotosBucketArn}/doctors/*'
 

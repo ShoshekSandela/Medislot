@@ -100,6 +100,7 @@ jobs:
 
     outputs:
       application_files_bucket: ${{ steps.outputs.outputs.application_files_bucket }}
+      application_files_bucket_arn: ${{ steps.outputs.outputs.application_files_bucket_arn }}
       database_endpoint: ${{ steps.outputs.outputs.database_endpoint }}
       database_secret_arn: ${{ steps.outputs.outputs.database_secret_arn }}
       auth_tokens_table: ${{ steps.outputs.outputs.auth_tokens_table }}
@@ -153,6 +154,7 @@ jobs:
           }
 
           echo "application_files_bucket=$(output ApplicationFilesBucketName)" >> "$GITHUB_OUTPUT"
+          echo "application_files_bucket_arn=$(output ApplicationFilesBucketArn)" >> "$GITHUB_OUTPUT"
           echo "database_endpoint=$(output DatabaseEndpoint)" >> "$GITHUB_OUTPUT"
           echo "database_secret_arn=$(output DatabaseSecretArn)" >> "$GITHUB_OUTPUT"
           echo "auth_tokens_table=$(output AuthTokensTableName)" >> "$GITHUB_OUTPUT"
@@ -198,7 +200,9 @@ jobs:
             --template-file cloudformation/iam-stack.yaml \
             --stack-name "$IAM_STACK_NAME" \
             --region "$AWS_REGION" \
-            --parameter-overrides Environment=dev \
+            --parameter-overrides \
+              Environment=dev \
+              ProfilePhotosBucketArn="${{ needs.deploy-data.outputs.application_files_bucket_arn }}" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
