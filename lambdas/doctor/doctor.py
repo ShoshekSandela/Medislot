@@ -194,6 +194,31 @@ def refresh_generated_slots(doctor_id, start_date=None, days=30):
 
 
 @log_execution
+def refresh_doctors_for_consultation_type(connection, consultation_type_id, start_date=None, days=30):
+    """Refresh slots for every doctor whose availability references this type."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT DISTINCT doctor_id
+            FROM doctor_availability
+            WHERE consultation_type_id = %s
+            """,
+            (int(consultation_type_id),),
+        )
+        doctor_ids = [int(row["doctor_id"]) for row in cursor.fetchall()]
+
+    results = []
+    for linked_doctor_id in doctor_ids:
+        results.append({
+            "doctor_id": linked_doctor_id,
+            "slot_generation": refresh_generated_slots(
+                linked_doctor_id, start_date, days
+            ),
+        })
+    return results
+
+
+@log_execution
 def get_profile(connection, doctor_id):
     with connection.cursor() as cursor:
         cursor.execute(
@@ -433,7 +458,11 @@ def update_profile(connection, doctor_id, data):
                 )
 
     connection.commit()
-    return response(200, {"message": "Doctor profile updated"})
+    refreshed_profile = get_profile(connection, doctor_id)
+    return response(200, {
+        "message": "Doctor profile updated",
+        "profile": refreshed_profile,
+    })
 
 
 
@@ -526,13 +555,26 @@ def consultation_types(connection, doctor_id, method, data, item_id=None):
                 raise
 
             connection.commit()
+            consultation_type_id = int(cursor.lastrowid)
+            affected_doctors = refresh_doctors_for_consultation_type(
+                connection,
+                consultation_type_id,
+                datetime.now(IST).date().isoformat(),
+                30,
+            )
             return response(201, {
                 "message": "Consultation type created",
-                "consultation_type_id": int(cursor.lastrowid),
+                "consultation_type_id": consultation_type_id,
+                "slot_generation": affected_doctors,
             })
 
         if method == "PUT" and item_id:
-            logger.info("Availability update step 1/6: validating update fields availability_id=%s", item_id)
+            cursor.execute(
+                "SELECT DISTINCT doctor_id FROM doctor_availability WHERE consultation_type_id = %s",
+                (item_id,),
+            )
+            affected_doctor_ids = [int(row["doctor_id"]) for row in cursor.fetchall()]
+            logger.info("Consultation type update affects doctor_ids=%s", affected_doctor_ids)
             allowed = {
                 "type_name", "duration_minutes", "capacity", "description",
                 "is_active", "consultation_fee",
@@ -583,9 +625,28 @@ def consultation_types(connection, doctor_id, method, data, item_id=None):
                 )
                 if not cursor.fetchone():
                     return response(404, {"message": "Consultation type not found"})
-            return response(200, {"message": "Consultation type updated"})
+            generation_results = [
+                {
+                    "doctor_id": linked_doctor_id,
+                    "slot_generation": refresh_generated_slots(
+                        linked_doctor_id,
+                        datetime.now(IST).date().isoformat(),
+                        30,
+                    ),
+                }
+                for linked_doctor_id in affected_doctor_ids
+            ]
+            return response(200, {
+                "message": "Consultation type updated",
+                "slot_generation": generation_results,
+            })
 
         if method == "DELETE" and item_id:
+            cursor.execute(
+                "SELECT DISTINCT doctor_id FROM doctor_availability WHERE consultation_type_id = %s",
+                (item_id,),
+            )
+            affected_doctor_ids = [int(row["doctor_id"]) for row in cursor.fetchall()]
             cursor.execute(
                 "UPDATE consultation_types SET is_active = FALSE WHERE consultation_type_id = %s",
                 (item_id,),
@@ -598,7 +659,21 @@ def consultation_types(connection, doctor_id, method, data, item_id=None):
                 )
                 if not cursor.fetchone():
                     return response(404, {"message": "Consultation type not found"})
-            return response(200, {"message": "Consultation type deactivated"})
+            generation_results = [
+                {
+                    "doctor_id": linked_doctor_id,
+                    "slot_generation": refresh_generated_slots(
+                        linked_doctor_id,
+                        datetime.now(IST).date().isoformat(),
+                        30,
+                    ),
+                }
+                for linked_doctor_id in affected_doctor_ids
+            ]
+            return response(200, {
+                "message": "Consultation type deactivated",
+                "slot_generation": generation_results,
+            })
 
     return response(405, {"message": "Method not allowed"})
 
@@ -1001,6 +1076,12 @@ def doctor_schedule(connection, doctor_id, query_params):
                 ExclusiveStartKey=result["LastEvaluatedKey"],
             )
             slots.extend(result.get("Items", []))
+        # Old slots can remain in DynamoDB for audit/history after an availability
+        # pattern is changed or deleted. They must not be shown as bookable schedule slots.
+        slots = [
+            item for item in slots
+            if str(item.get("status", "")).upper() != "INACTIVE"
+        ]
         slots.sort(key=lambda item: item.get("slotTime", ""))
 
         # RDS is the system of record for booked appointments and patient details.

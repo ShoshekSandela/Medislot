@@ -702,15 +702,10 @@ def profile():
 
 
 
+        # Always submit the current form values. Session profile data may be stale
+        # after another request or an earlier failed save.
         for key in ("first_name", "last_name", "qualification"):
-
-            value = f.get(key, "").strip()
-
-
-
-            if value != session.get("profile", {}).get(key):
-
-                body[key] = value
+            body[key] = f.get(key, "").strip()
 
 
 
@@ -726,13 +721,7 @@ def profile():
 
 
 
-            if experience != session.get("profile", {}).get(
-
-                "experience_years"
-
-            ):
-
-                body["experience_years"] = experience
+            body["experience_years"] = experience
 
 
 
@@ -764,17 +753,22 @@ def profile():
 
             if body:
 
-                updated = put("/doctors/profile", body)
+                put("/doctors/profile", body)
 
+                # Reload the persisted profile from RDS instead of keeping the
+                # update response/message object in the browser session.
+                refreshed_profile = get("/doctors/profile")
+                if isinstance(refreshed_profile, dict):
+                    session["profile"] = refreshed_profile
+                    session["doctor_name"] = (
+                        f"{refreshed_profile.get('first_name', '')} "
+                        f"{refreshed_profile.get('last_name', '')}"
+                    ).strip() or "Doctor"
+                    session["profile_status"] = refreshed_profile.get(
+                        "profile_status", "—"
+                    )
 
-
-                if isinstance(updated, dict):
-
-                    session["profile"] = updated
-
-
-
-                flash("Profile updated.", "success")
+                flash("Profile updated successfully.", "success")
 
 
 
@@ -1940,6 +1934,9 @@ def schedule():
 
 
         for original_slot in slots:
+
+            if str(original_slot.get("status", "")).upper() == "INACTIVE":
+                continue
 
             slot = attach_consultation_type(
 

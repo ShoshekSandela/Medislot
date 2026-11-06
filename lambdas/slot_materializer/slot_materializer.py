@@ -240,10 +240,10 @@ def create_slot(
                 Key={"slotId": slot_id},
                 UpdateExpression=(
                     "SET #status = :status, #is_blackout = :blackout, "
-                    "hospitalId = :hospital_id, "
-                    "consultationTypeId = :consultation_type_id, "
-                    "consultationFee = :fee, #capacity = :capacity, "
-                    "slotTime = :slot_time, endTime = :end_time, "
+                    "#hospital_id = :hospital_id, "
+                    "#consultation_type_id = :consultation_type_id, "
+                    "#consultation_fee = :fee, #capacity = :capacity, "
+                    "#slot_time = :slot_time, #end_time = :end_time, "
                     "#timezone = :timezone"
                 ),
                 ConditionExpression=(
@@ -252,7 +252,12 @@ def create_slot(
                 ExpressionAttributeNames={
                     "#status": "status",
                     "#is_blackout": "isBlackout",
+                    "#hospital_id": "hospitalId",
+                    "#consultation_type_id": "consultationTypeId",
+                    "#consultation_fee": "consultationFee",
                     "#capacity": "capacity",
+                    "#slot_time": "slotTime",
+                    "#end_time": "endTime",
                     "#timezone": "timezone",
                 },
                 ExpressionAttributeValues={
