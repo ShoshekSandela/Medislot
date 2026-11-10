@@ -68,40 +68,6 @@ Parameters:
 
 Resources:
 
-  # =========================================================
-  # CLOUDWATCH LOG GROUPS (30-day retention)
-  # =========================================================
-
-  AuthenticationLambdaLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-authentication
-      RetentionInDays: 30
-
-  AuthorizerLambdaLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-authorizer
-      RetentionInDays: 30
-
-  DoctorLambdaLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-doctor
-      RetentionInDays: 30
-
-  PatientLambdaLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-patient
-      RetentionInDays: 30
-
-  SlotMaterializerLambdaLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-slot-materializer
-      RetentionInDays: 30
-
   # API Gateway account-level role for publishing execution logs.
   ApiGatewayCloudWatchRole:
     Type: AWS::IAM::Role
@@ -134,8 +100,6 @@ Resources:
 
   AuthenticationLambda:
     Type: AWS::Lambda::Function
-    DependsOn:
-      - AuthenticationLambdaLogGroup
     Properties:
       FunctionName: !Sub medislot-${Environment}-authentication
       Runtime: python3.12
@@ -170,8 +134,6 @@ Resources:
 
   AuthorizerLambda:
     Type: AWS::Lambda::Function
-    DependsOn:
-      - AuthorizerLambdaLogGroup
     Properties:
       FunctionName: !Sub medislot-${Environment}-authorizer
       Runtime: python3.12
@@ -203,8 +165,6 @@ Resources:
 
   DoctorLambda:
     Type: AWS::Lambda::Function
-    DependsOn:
-      - DoctorLambdaLogGroup
     Properties:
       FunctionName: !Sub medislot-${Environment}-doctor
       Runtime: python3.12
@@ -240,8 +200,6 @@ Resources:
 
   PatientLambda:
     Type: AWS::Lambda::Function
-    DependsOn:
-      - PatientLambdaLogGroup
     Properties:
       FunctionName: !Sub medislot-${Environment}-patient
       Runtime: python3.12
@@ -275,8 +233,6 @@ Resources:
 
   SlotMaterializerLambda:
     Type: AWS::Lambda::Function
-    DependsOn:
-      - SlotMaterializerLambdaLogGroup
     Properties:
       FunctionName: !Sub medislot-${Environment}-slot-materializer
       Runtime: python3.12
