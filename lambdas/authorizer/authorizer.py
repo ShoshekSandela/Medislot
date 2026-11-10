@@ -31,6 +31,9 @@ token_table = dynamodb.Table(AUTH_TOKENS_TABLE)
 
 def lambda_handler(event, context):
     # This handler expects API Gateway REST API TOKEN-authorizer events.
+    request_id = getattr(context, "aws_request_id", "unknown")
+    event = event or {}
+    logger.info("AUTHORIZER REQUEST START request_id=%s", request_id)
     auth_header = event.get("authorizationToken", "")
     parts = auth_header.split()
 
@@ -70,6 +73,7 @@ def lambda_handler(event, context):
             logger.error("Missing methodArn; configure a REST API TOKEN authorizer")
             raise Exception("Unauthorized")
 
+        logger.info("Authorizer allow request_id=%s role=%s", request_id, role)
         return {
             "principalId": user_id,
             "policyDocument": {
@@ -90,9 +94,9 @@ def lambda_handler(event, context):
         }
 
     except jwt.PyJWTError:
-        logger.info("Rejected invalid, expired, or revoked JWT")
+        logger.info("Rejected invalid, expired, or revoked JWT request_id=%s", request_id)
         raise Exception("Unauthorized")
     except ClientError:
         # Fail closed if revocation status cannot be checked.
-        logger.exception("Could not check token revocation in DynamoDB")
+        logger.exception("Could not check token revocation in DynamoDB request_id=%s", request_id)
         raise Exception("Unauthorized")

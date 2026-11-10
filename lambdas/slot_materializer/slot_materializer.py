@@ -27,24 +27,36 @@ IST = ZoneInfo("Asia/Kolkata")
 
 
 def get_db_connection():
+    """Read DB credentials from Secrets Manager and connect to RDS."""
+    logger.info("STEP 1/5: Starting RDS connection setup")
+
     secret_arn = os.environ["DB_SECRET_ARN"]
     db_host = os.environ["DB_HOST"]
     db_name = os.environ["DB_NAME"]
 
-    secret_response = secrets_client.get_secret_value(
-        SecretId=secret_arn
-    )
-    secret = json.loads(secret_response["SecretString"])
+    try:
+        logger.info("STEP 1A: Retrieving database credentials from Secrets Manager")
+        secret_response = secrets_client.get_secret_value(SecretId=secret_arn)
+        secret = json.loads(secret_response["SecretString"])
+        logger.info("STEP 1B: Database credentials retrieved (values hidden)")
 
-    return pymysql.connect(
-        host=db_host,
-        user=secret["username"],
-        password=secret["password"],
-        database=db_name,
-        cursorclass=pymysql.cursors.DictCursor,
-        autocommit=True,
-        init_command="SET time_zone = '+05:30'",
-    )
+        connection = pymysql.connect(
+            host=db_host,
+            user=secret["username"],
+            password=secret["password"],
+            database=db_name,
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=True,
+            init_command="SET time_zone = '+05:30'",
+            connect_timeout=10,
+            read_timeout=30,
+            write_timeout=30,
+        )
+        logger.info("STEP 1 COMPLETE: Connected to RDS database=%s host=%s", db_name, db_host)
+        return connection
+    except Exception:
+        logger.exception("STEP 1 FAILED: Unable to retrieve DB secret or connect to RDS")
+        raise
 
 
 def get_date_range(event):
@@ -68,6 +80,10 @@ def get_date_range(event):
     if days < 1 or days > 90:
         raise ValueError("days must be between 1 and 90")
 
+    logger.info(
+        "STEP 2 COMPLETE: Date range resolved start_date=%s days=%s end_date=%s timezone=Asia/Kolkata",
+        start_day.isoformat(), days, (start_day + timedelta(days=days - 1)).isoformat()
+    )
     return start_day, days
 
 
@@ -131,10 +147,19 @@ def get_availability(connection, day_of_week, target_date, doctor_id=None):
         sql += " AND da.doctor_id = %s"
         params.append(int(doctor_id))
 
+    logger.info(
+        "STEP 3A: Querying active doctor availability date=%s db_day_of_week=%s doctor_id=%s",
+        target_date.isoformat(), day_of_week, doctor_id
+    )
     with connection.cursor() as cursor:
         cursor.execute(sql, tuple(params))
+        rows = cursor.fetchall()
 
-        return cursor.fetchall()
+    logger.info(
+        "STEP 3B: Availability query completed date=%s records=%s",
+        target_date.isoformat(), len(rows)
+    )
+    return rows
 
 
 def is_blackout(
@@ -165,8 +190,14 @@ def is_blackout(
                 start_ist.replace(tzinfo=None),
             ),
         )
+        blackout_found = cursor.fetchone() is not None
 
-        return cursor.fetchone() is not None
+    if blackout_found:
+        logger.info(
+            "BLACKOUT MATCH: doctor_id=%s hospital_id=%s slot_start=%s slot_end=%s",
+            doctor_id, hospital_id, start_ist.isoformat(), end_ist.isoformat()
+        )
+    return blackout_found
 
 
 def create_slot(
@@ -199,6 +230,11 @@ def create_slot(
     )
 
     desired_status = "BLACKOUT" if blackout else "AVAILABLE"
+    logger.debug(
+        "STEP 4A: Preparing slot doctor_id=%s hospital_id=%s consultation_type_id=%s slot_id=%s status=%s",
+        availability["doctor_id"], availability["hospital_id"],
+        availability["consultation_type_id"], slot_id, desired_status
+    )
 
     item = {
         "slotId": slot_id,
@@ -221,6 +257,7 @@ def create_slot(
             Item=item,
             ConditionExpression="attribute_not_exists(slotId)",
         )
+        logger.debug("STEP 4B: DynamoDB slot created slot_id=%s status=%s", slot_id, desired_status)
         return "created_blackout" if blackout else "created"
 
     except ClientError as error:
@@ -232,6 +269,8 @@ def create_slot(
                 slots_table.name,
             )
             raise
+
+        logger.debug("STEP 4B: Slot already exists; checking whether safe metadata update is allowed slot_id=%s", slot_id)
 
         # Existing slot: update only blackout/status metadata if it has no
         # bookings. Never reset capacity, bookedCount, or other booking data.
@@ -273,9 +312,12 @@ def create_slot(
                     ":zero": 0,
                 },
             )
+            logger.debug("STEP 4C: Existing unbooked slot metadata refreshed slot_id=%s", slot_id)
         except ClientError as update_error:
             update_code = update_error.response.get("Error", {}).get("Code")
-            if update_code != "ConditionalCheckFailedException":
+            if update_code == "ConditionalCheckFailedException":
+                logger.info("Existing slot was not changed because it has bookings slot_id=%s", slot_id)
+            else:
                 logger.exception(
                     "DynamoDB update_item failed for existing slotId=%s",
                     slot_id,
@@ -298,8 +340,8 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
         doctor_id=doctor_id
     )
     logger.info(
-        "Materializing date=%s day_of_week=%s availability_records=%s",
-        target_date.isoformat(), day_of_week, len(availability_records)
+        "STEP 3 COMPLETE: Starting daily materialization date=%s day_of_week=%s availability_records=%s doctor_id=%s",
+        target_date.isoformat(), day_of_week, len(availability_records), doctor_id
     )
 
     results = {
@@ -320,7 +362,13 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
             "SLOT_BUFFER_MINUTES cannot be negative"
         )
 
-    for availability in availability_records:
+    for availability_index, availability in enumerate(availability_records, start=1):
+        logger.info(
+            "STEP 3C: Processing availability %s/%s availability_id=%s doctor_id=%s hospital_id=%s consultation_type_id=%s",
+            availability_index, len(availability_records),
+            availability.get("availability_id"), availability.get("doctor_id"),
+            availability.get("hospital_id"), availability.get("consultation_type_id")
+        )
 
         start_time = mysql_time_to_time(
             availability["start_time"]
@@ -355,6 +403,13 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
             target_date,
             end_time,
             tzinfo=IST
+        )
+
+        logger.info(
+            "AVAILABILITY WINDOW: doctor_id=%s date=%s start=%s end=%s duration_minutes=%s buffer_minutes=%s capacity=%s",
+            availability["doctor_id"], target_date.isoformat(),
+            window_start.isoformat(), window_end.isoformat(), duration_minutes,
+            buffer_minutes, availability.get("capacity", 1)
         )
 
         current_start = window_start
@@ -405,12 +460,22 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
                 current_end + buffer_duration
             )
 
+    logger.info(
+        "SLOT GENERATION COMPLETE: date=%s doctor_id=%s generated_slot_count=%s created=%s duplicates=%s blackout_slots=%s",
+        target_date.isoformat(), doctor_id, len(generated_slot_ids),
+        results["created"], results["duplicates"], results["blackout_slots"]
+    )
+
     # For targeted doctor refreshes, deactivate obsolete unbooked slots for this date.
     # Existing booked slots are never changed or deleted.
     if doctor_id is not None:
         scan_filter = (
             Attr("doctorId").eq(str(doctor_id))
             & Attr("slotTime").begins_with(target_date.isoformat())
+        )
+        logger.info(
+            "STEP 4D: Scanning existing slots for targeted refresh doctor_id=%s date=%s",
+            doctor_id, target_date.isoformat()
         )
         page = slots_table.scan(FilterExpression=scan_filter)
         existing_items = list(page.get("Items", []))
@@ -421,6 +486,10 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
             )
             existing_items.extend(page.get("Items", []))
 
+        logger.info(
+            "STEP 4E: Existing slot scan completed doctor_id=%s date=%s existing_slots=%s newly_generated_slots=%s",
+            doctor_id, target_date.isoformat(), len(existing_items), len(generated_slot_ids)
+        )
         for existing in existing_items:
             if existing.get("slotId") in generated_slot_ids:
                 continue
@@ -442,17 +511,27 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
                     },
                 )
                 results["deactivated"] += 1
+                logger.info("Obsolete unbooked slot deactivated slot_id=%s", existing["slotId"])
             except ClientError as error:
-                if error.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                if error.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                    logger.info("Obsolete slot retained because it has bookings slot_id=%s", existing["slotId"])
+                else:
+                    logger.exception("Failed to deactivate obsolete slot slot_id=%s", existing.get("slotId"))
                     raise
 
-    logger.info("Materialized date=%s results=%s", target_date.isoformat(), results)
+    logger.info("STEP 4 COMPLETE: Daily materialization finished date=%s results=%s", target_date.isoformat(), results)
     return results
 
 
 def lambda_handler(event, context):
-
+    """Generate slots for a date range, optionally for one doctor only."""
     event = event or {}
+    request_id = getattr(context, "aws_request_id", "unknown")
+    logger.info("========== SLOT MATERIALIZER START request_id=%s ==========", request_id)
+    logger.info(
+        "Incoming event metadata start_date=%s days=%s doctor_id=%s",
+        event.get("start_date"), event.get("days"), event.get("doctor_id")
+    )
 
     try:
         start_day, days = get_date_range(event)
@@ -465,6 +544,8 @@ def lambda_handler(event, context):
             })
         }
 
+    logger.info("STEP 2 COMPLETE: Input validation passed")
+
     table_name = os.environ.get("SLOTS_TABLE_NAME")
     if not table_name:
         return {
@@ -472,6 +553,7 @@ def lambda_handler(event, context):
             "body": json.dumps({"message": "SLOTS_TABLE_NAME is not configured"})
         }
 
+    logger.info("STEP 2B: DynamoDB slots table configured table_name=%s", table_name)
     slots_table = dynamodb.Table(table_name)
     doctor_id = event.get("doctor_id")
     if doctor_id is not None:
@@ -504,11 +586,14 @@ def lambda_handler(event, context):
     try:
 
         for offset in range(days):
-
             target_date = (
                 start_day + timedelta(days=offset)
             )
 
+            logger.info(
+                "PROCESSING DAY %s/%s date=%s doctor_id=%s",
+                offset + 1, days, target_date.isoformat(), doctor_id
+            )
             day_results = materialize_day(
                 connection,
                 slots_table,
@@ -519,7 +604,12 @@ def lambda_handler(event, context):
             for key in total_results:
                 total_results[key] += day_results[key]
 
-        logger.info("Slot materialization completed: %s", total_results)
+            logger.info(
+                "DAY COMPLETE %s/%s date=%s daily_results=%s running_totals=%s",
+                offset + 1, days, target_date.isoformat(), day_results, total_results
+            )
+
+        logger.info("STEP 5 COMPLETE: Slot materialization completed request_id=%s totals=%s", request_id, total_results)
         return {
             "statusCode": 200,
             "body": json.dumps({
@@ -532,5 +622,16 @@ def lambda_handler(event, context):
             })
         }
 
+    except Exception:
+        logger.exception(
+            "SLOT MATERIALIZER FAILED request_id=%s start_date=%s days=%s doctor_id=%s",
+            request_id, start_day.isoformat(), days, doctor_id
+        )
+        raise
     finally:
-        connection.close()
+        try:
+            connection.close()
+            logger.info("RDS connection closed request_id=%s", request_id)
+        except Exception:
+            logger.exception("Failed to close RDS connection request_id=%s", request_id)
+        logger.info("========== SLOT MATERIALIZER END request_id=%s ==========", request_id)

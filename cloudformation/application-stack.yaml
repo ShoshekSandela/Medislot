@@ -69,11 +69,73 @@ Parameters:
 Resources:
 
   # =========================================================
+  # CLOUDWATCH LOG GROUPS (30-day retention)
+  # =========================================================
+
+  AuthenticationLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-authentication
+      RetentionInDays: 30
+
+  AuthorizerLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-authorizer
+      RetentionInDays: 30
+
+  DoctorLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-doctor
+      RetentionInDays: 30
+
+  PatientLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-patient
+      RetentionInDays: 30
+
+  SlotMaterializerLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-slot-materializer
+      RetentionInDays: 30
+
+  # API Gateway account-level role for publishing execution logs.
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
+  ApiGatewayAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/medislot-${Environment}
+      RetentionInDays: 30
+
+
+  # =========================================================
   # AUTHENTICATION LAMBDA
   # =========================================================
 
   AuthenticationLambda:
     Type: AWS::Lambda::Function
+    DependsOn:
+      - AuthenticationLambdaLogGroup
     Properties:
       FunctionName: !Sub medislot-${Environment}-authentication
       Runtime: python3.12
@@ -108,6 +170,8 @@ Resources:
 
   AuthorizerLambda:
     Type: AWS::Lambda::Function
+    DependsOn:
+      - AuthorizerLambdaLogGroup
     Properties:
       FunctionName: !Sub medislot-${Environment}-authorizer
       Runtime: python3.12
@@ -139,6 +203,8 @@ Resources:
 
   DoctorLambda:
     Type: AWS::Lambda::Function
+    DependsOn:
+      - DoctorLambdaLogGroup
     Properties:
       FunctionName: !Sub medislot-${Environment}-doctor
       Runtime: python3.12
@@ -174,6 +240,8 @@ Resources:
 
   PatientLambda:
     Type: AWS::Lambda::Function
+    DependsOn:
+      - PatientLambdaLogGroup
     Properties:
       FunctionName: !Sub medislot-${Environment}-patient
       Runtime: python3.12
@@ -207,6 +275,8 @@ Resources:
 
   SlotMaterializerLambda:
     Type: AWS::Lambda::Function
+    DependsOn:
+      - SlotMaterializerLambdaLogGroup
     Properties:
       FunctionName: !Sub medislot-${Environment}-slot-materializer
       Runtime: python3.12
@@ -507,8 +577,28 @@ Resources:
       - PatientsDeleteMethod
     Properties:
       RestApiId: !Ref MediSlotApi
-      StageName: !Ref Environment
       Description: !Sub MediSlot ${Environment} API deployment
+
+
+  # Explicit stage enables access logs and request metrics.
+  MediSlotApiStage:
+    Type: AWS::ApiGateway::Stage
+    DependsOn:
+      - ApiGatewayAccount
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      DeploymentId: !Ref MediSlotApiDeploymentV2
+      StageName: !Ref Environment
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiGatewayAccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","httpMethod":"$context.httpMethod","resourcePath":"$context.resourcePath","status":"$context.status","responseLatency":"$context.responseLatency","integrationError":"$context.integrationErrorMessage"}'
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          LoggingLevel: INFO
+          MetricsEnabled: true
+          DataTraceEnabled: false
+
 
 Outputs:
 

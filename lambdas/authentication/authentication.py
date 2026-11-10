@@ -729,9 +729,10 @@ def lambda_handler(event, context):
 
         path = "/" + path.lstrip("/")
 
+        request_id = getattr(context, "aws_request_id", "unknown")
         logger.info(
-            "Authentication request: method=%s path=%s resource=%s",
-            method, path, event.get("resource")
+            "AUTH REQUEST START request_id=%s method=%s path=%s resource=%s",
+            request_id, method, path, event.get("resource")
         )
 
         if method == "OPTIONS":
@@ -764,6 +765,7 @@ def lambda_handler(event, context):
         if method == "POST" and path == "/auth/init-db":
             return initialize_database(event)
 
+        logger.warning("Authentication route not found request_id=%s method=%s path=%s", request_id, method, path)
         return response(404, {
             "message": "Route not found",
             "method": method,
@@ -772,6 +774,6 @@ def lambda_handler(event, context):
         })
 
     except Exception:
-        logger.exception("Authentication Lambda handler failed")
+        logger.exception("Authentication Lambda handler failed request_id=%s", getattr(context, "aws_request_id", "unknown"))
         return response(500, {"message": "Internal server error"})
 

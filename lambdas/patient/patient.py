@@ -16,24 +16,29 @@ secrets_client = boto3.client("secretsmanager")
 
 
 def connect_db():
-    secret_response = secrets_client.get_secret_value(
-        SecretId=os.environ["DB_SECRET_ARN"]
-    )
-
-    secret = json.loads(secret_response["SecretString"])
-
-    return pymysql.connect(
-        host=os.environ["DB_HOST"],
-        user=secret.get("username") or secret.get("user"),
-        password=secret["password"],
-        database=os.environ.get("DB_NAME", "medislot"),
-        cursorclass=pymysql.cursors.DictCursor,
-        connect_timeout=5,
-        init_command="SET time_zone = '+05:30'",
-        read_timeout=10,
-        write_timeout=10,
-        autocommit=False
-    )
+    logger.info("STEP START: patient database connection")
+    try:
+        secret_response = secrets_client.get_secret_value(
+            SecretId=os.environ["DB_SECRET_ARN"]
+        )
+        secret = json.loads(secret_response["SecretString"])
+        connection = pymysql.connect(
+            host=os.environ["DB_HOST"],
+            user=secret.get("username") or secret.get("user"),
+            password=secret["password"],
+            database=os.environ.get("DB_NAME", "medislot"),
+            cursorclass=pymysql.cursors.DictCursor,
+            connect_timeout=5,
+            init_command="SET time_zone = '+05:30'",
+            read_timeout=10,
+            write_timeout=10,
+            autocommit=False
+        )
+        logger.info("STEP COMPLETE: patient database connection")
+        return connection
+    except Exception:
+        logger.exception("STEP FAILED: patient database connection")
+        raise
 
 
 def response(status, body):
@@ -106,11 +111,18 @@ def get_patient_identity(event):
 
 
 def lambda_handler(event, context):
-
+    request_id = getattr(context, "aws_request_id", "unknown")
+    event = event or {}
+    request_context = event.get("requestContext") or {}
+    method = (event.get("httpMethod") or (request_context.get("http") or {}).get("method") or "").upper()
+    path = event.get("path") or event.get("rawPath") or request_context.get("path") or ""
+    logger.info("PATIENT REQUEST START request_id=%s method=%s path=%s", request_id, method, path)
     connection = None
 
     try:
+        logger.info("Patient step 1/5: resolving authenticated patient identity")
         patient_id, role = get_patient_identity(event)
+        logger.info("Patient identity resolved request_id=%s role=%s authenticated=%s", request_id, role, bool(patient_id))
 
         if not patient_id:
             return response(401, {
@@ -137,7 +149,9 @@ def lambda_handler(event, context):
 
         body = parse_body(event) if method == "PUT" else {}
 
+        logger.info("Patient step 2/5: connecting to database request_id=%s", request_id)
         connection = connect_db()
+        logger.info("Patient step 3/5: executing patient route method=%s", method)
 
         with connection.cursor() as cursor:
 
@@ -361,6 +375,7 @@ def lambda_handler(event, context):
                 })
 
     except ValueError as exc:
+        logger.warning("Patient request validation failed request_id=%s error=%s", request_id, exc)
         return response(400, {
             "message": str(exc)
         })
@@ -388,3 +403,4 @@ def lambda_handler(event, context):
     finally:
         if connection:
             connection.close()
+        logger.info("PATIENT REQUEST END request_id=%s", request_id)
