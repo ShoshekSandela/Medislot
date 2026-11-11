@@ -34,22 +34,39 @@ ssm = boto3.client("ssm", region_name=REGION)
 secrets_manager = boto3.client("secretsmanager", region_name=REGION)
 dynamodb = boto3.resource("dynamodb", region_name=REGION)
 token_table = dynamodb.Table(AUTH_TOKENS_TABLE)
-# Read secrets during Lambda initialization (cold start).
-JWT_SECRET = ssm.get_parameter(
-    Name=JWT_SECRET_PARAMETER, WithDecryption=True
-)["Parameter"]["Value"]
-DB_SECRET = json.loads(
-    secrets_manager.get_secret_value(SecretId=DB_SECRET_ARN)["SecretString"]
-)
+# Secrets are loaded lazily (first request of a warm container) instead of at
+# import time. A failure here used to crash the Lambda during init, which API
+# Gateway reports as an opaque 502 with nothing useful in the logs. Loading
+# inside the handler lets us log the real error and return a JSON 500.
+JWT_SECRET = None
+DB_SECRET = None
+
+
+def ensure_secrets():
+    global JWT_SECRET, DB_SECRET
+    if JWT_SECRET is None:
+        JWT_SECRET = ssm.get_parameter(
+            Name=JWT_SECRET_PARAMETER, WithDecryption=True
+        )["Parameter"]["Value"]
+    if DB_SECRET is None:
+        DB_SECRET = json.loads(
+            secrets_manager.get_secret_value(SecretId=DB_SECRET_ARN)["SecretString"]
+        )
+
+
+CORRELATION_ID = ""
 
 
 def response(status, body):
+    headers = {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+    }
+    if CORRELATION_ID:
+        headers["X-Correlation-Id"] = CORRELATION_ID
     return {
         "statusCode": status,
-        "headers": {
-            "Content-Type": "application/json",
-            "Cache-Control": "no-store",
-        },
+        "headers": headers,
         "body": json.dumps(body, default=str),
     }
 
@@ -161,8 +178,13 @@ def hash_password(password):
 
 def verify_password(password, stored_hash):
     try:
-        return bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
-    except (ValueError, TypeError):
+        # Some MySQL drivers/column types hand back bytes instead of str.
+        if isinstance(stored_hash, (bytes, bytearray, memoryview)):
+            stored_bytes = bytes(stored_hash)
+        else:
+            stored_bytes = str(stored_hash).encode("utf-8")
+        return bcrypt.checkpw(password.encode("utf-8"), stored_bytes)
+    except (ValueError, TypeError, AttributeError):
         return False
 
 
@@ -503,8 +525,10 @@ def login(event):
             }
         )
 
-    except Exception:
-        logger.exception("Login failed")
+    except Exception as exc:
+        logger.exception(
+            "Login failed correlation_id=%s error_type=%s", CORRELATION_ID, type(exc).__name__
+        )
         return response(500, {"message": "Internal server error"})
 
 def refresh_session(event):
@@ -698,9 +722,13 @@ def logout(event):
 
 def lambda_handler(event, context):
     """API Gateway entry point for MediSlot authentication."""
+    global CORRELATION_ID
     try:
         event = event or {}
         request_context = event.get("requestContext") or {}
+        _hdrs = {str(k).lower(): v for k, v in (event.get("headers") or {}).items()}
+        CORRELATION_ID = str(_hdrs.get("x-correlation-id") or "")[:64]
+        ensure_secrets()
 
         method = (
             event.get("httpMethod")
@@ -778,7 +806,10 @@ def lambda_handler(event, context):
             "resource": event.get("resource")
         })
 
-    except Exception:
-        logger.exception("Authentication Lambda handler failed request_id=%s", getattr(context, "aws_request_id", "unknown"))
+    except Exception as exc:
+        logger.exception(
+            "Authentication Lambda handler failed request_id=%s correlation_id=%s error_type=%s",
+            getattr(context, "aws_request_id", "unknown"), CORRELATION_ID, type(exc).__name__,
+        )
         return response(500, {"message": "Internal server error"})
 
