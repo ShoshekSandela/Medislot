@@ -568,7 +568,6 @@ jobs:
     name: Deployed Patient API Integration Tests
     runs-on: ubuntu-latest
     needs: deploy-application
-    if: ${{ vars.RUN_DEPLOYED_INTEGRATION_TESTS == 'true' }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
