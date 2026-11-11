@@ -1,0 +1,345 @@
+
+{% extends 'base.html' %}
+
+{% block body %}
+<main class="app-shell">
+
+    <header class="app-header">
+        <a class="brand" href="{{ url_for('patient.dashboard') }}">
+            <span class="brand-mark">✚</span>
+            MediSlot
+        </a>
+
+        <div class="header-actions">
+            <span>
+                Welcome, {{ session.get('patient_name', 'Patient') }}
+            </span>
+
+            <form method="post" action="{{ url_for('patient.logout') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="btn secondary small-btn">Sign out</button>
+            </form>
+        </div>
+    </header>
+
+    <section class="page-heading">
+        <span class="eyebrow">PATIENT DASHBOARD</span>
+        <h1>Your care dashboard</h1>
+        <p>
+            Manage your details, search doctors and browse available
+            consultation slots.
+        </p>
+    </section>
+
+    <div class="dashboard-grid">
+
+        <!-- PATIENT PROFILE -->
+        <section class="panel">
+            <h2>My profile</h2>
+
+            <form method="post" action="{{ url_for('patient.update_profile') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                <label>
+                    First name
+                    <input
+                        name="first_name"
+                        value="{{ profile.get('first_name', '') }}"
+                        required
+                    >
+                </label>
+
+                <label>
+                    Last name
+                    <input
+                        name="last_name"
+                        value="{{ profile.get('last_name', '') }}"
+                    >
+                </label>
+
+                <label>
+                    Phone
+                    <input
+                        name="phone"
+                        value="{{ profile.get('phone', '') or '' }}"
+                    >
+                </label>
+
+                <label>
+                    Date of birth
+                    <input
+                        type="date"
+                        name="date_of_birth"
+                        value="{{ profile.get('date_of_birth', '') or '' }}"
+                    >
+                </label>
+
+                <label>
+                    Gender
+                    <select name="gender">
+                        <option value="">Prefer not to say</option>
+
+                        {% for value in [
+                            'male',
+                            'female',
+                            'other',
+                            'prefer_not_to_say'
+                        ] %}
+                            <option
+                                value="{{ value }}"
+                                {% if profile.get('gender') == value %}selected{% endif %}
+                            >
+                                {{ value.replace('_', ' ')|title }}
+                            </option>
+                        {% endfor %}
+                    </select>
+                </label>
+
+                <button class="btn primary" type="submit">
+                    Save profile
+                </button>
+            </form>
+
+            <hr>
+
+            <!-- ACCOUNT DEACTIVATION -->
+            <form
+                method="post"
+                action="{{ url_for('patient.deactivate_account') }}"
+                onsubmit="return confirm('Deactivate your patient account? You will no longer be able to sign in.');"
+            >
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+                <button class="btn danger-ghost" type="submit">
+                    Deactivate account
+                </button>
+            </form>
+        </section>
+
+        <!-- DOCTOR SEARCH -->
+        <section class="panel">
+            <h2>Find doctors</h2>
+
+            <form method="get" action="{{ url_for('patient.search_doctors') }}">
+
+                <label>
+                    Doctor name
+                    <input
+                        name="name"
+                        value="{{ filters.get('name', '') }}"
+                        placeholder="e.g. Anil"
+                    >
+                </label>
+
+                <label>
+                    Hospital
+                    <input
+                        name="hospital"
+                        value="{{ filters.get('hospital', '') }}"
+                        placeholder="Hospital name"
+                    >
+                </label>
+
+                <label>
+                    Specialisation
+                    <input
+                        name="specialisation"
+                        value="{{ filters.get('specialisation', '') }}"
+                        placeholder="e.g. Cardiology"
+                    >
+                </label>
+
+                <label>
+                    City
+                    <input
+                        name="city"
+                        value="{{ filters.get('city', '') }}"
+                        placeholder="e.g. Hyderabad"
+                    >
+                </label>
+
+                <div class="field-row">
+                    <label>
+                        Page
+                        <input
+                            type="number"
+                            name="page"
+                            min="1"
+                            value="{{ request.args.get('page', '1') }}"
+                        >
+                    </label>
+
+                    <label>
+                        Page size
+                        <input
+                            type="number"
+                            name="page_size"
+                            min="1"
+                            max="100"
+                            value="{{ request.args.get('page_size', '10') }}"
+                        >
+                    </label>
+                </div>
+
+                <button class="btn primary" type="submit">
+                    Search doctors
+                </button>
+
+            </form>
+        </section>
+
+    </div>
+
+    <!-- DOCTOR SEARCH RESULTS -->
+    {% if doctors %}
+    <section class="panel">
+
+        <div class="panel-heading">
+            <h2>Search results</h2>
+            <span>{{ doctors.pagination.total }} doctors found</span>
+        </div>
+
+        {% for doctor in doctors.doctors %}
+        <article class="doctor-result">
+
+            <div>
+                <h3>
+                    Dr. {{ doctor.first_name }}
+                    {{ doctor.last_name or '' }}
+                </h3>
+
+                <p>
+                    {{ doctor.qualification or 'Qualification not listed' }}
+                    · {{ doctor.experience_years }} years experience
+                </p>
+            </div>
+
+            <a
+                class="btn secondary small-btn"
+                href="{{ url_for('patient.doctor_detail', doctor_id=doctor.doctor_id) }}"
+            >
+                View profile & slots
+            </a>
+
+        </article>
+        {% else %}
+            <p>No doctors match these filters.</p>
+        {% endfor %}
+
+        <p class="muted">
+            Page {{ doctors.pagination.page }}
+            of {{ doctors.pagination.total_pages }}
+        </p>
+
+    </section>
+    {% endif %}
+
+    <!-- SELECTED DOCTOR PROFILE AND AVAILABILITY -->
+    {% if selected_doctor %}
+    <section class="panel">
+
+        <h2>
+            Dr. {{ selected_doctor.first_name }}
+            {{ selected_doctor.last_name or '' }}
+        </h2>
+
+        <p>
+            {{ selected_doctor.qualification or '' }}
+            · {{ selected_doctor.experience_years }} years experience
+        </p>
+
+        <h3>Specialisations</h3>
+
+        <p>
+            {% for item in selected_doctor.specialisations %}
+                {{ item.specialisation_name }}
+                {% if not loop.last %}, {% endif %}
+            {% else %}
+                Not listed
+            {% endfor %}
+        </p>
+
+        <h3>Hospitals</h3>
+
+        {% for hospital in selected_doctor.hospitals %}
+            <p>
+                {{ hospital.hospital_name }}
+                {% if hospital.branch_name %}
+                    – {{ hospital.branch_name }}
+                {% endif %},
+                {{ hospital.city }}
+            </p>
+        {% endfor %}
+
+        <h3>Consultation types and fees</h3>
+
+        {% for item in selected_doctor.consultation_types %}
+            <p>
+                {{ item.type_name }}
+                · {{ item.duration_minutes }} minutes
+                · ₹{{ item.consultation_fee }}
+            </p>
+        {% else %}
+            <p>No active consultation types listed.</p>
+        {% endfor %}
+
+        <!-- SLOT DATE FILTER -->
+        <form method="get">
+
+            <label>
+                Start date
+                <input
+                    type="date"
+                    name="start_date"
+                    value="{{ request.args.get('start_date', availability.start_date if availability else '') }}"
+                    required
+                >
+            </label>
+
+            <label>
+                End date
+                <input
+                    type="date"
+                    name="end_date"
+                    value="{{ request.args.get('end_date', availability.end_date if availability else '') }}"
+                    required
+                >
+            </label>
+
+            <button class="btn secondary" type="submit">
+                Refresh availability
+            </button>
+
+        </form>
+
+        <!-- AVAILABLE SLOTS -->
+        <h3>Available slots</h3>
+
+        {% if availability and availability.slots %}
+
+            {% for slot in availability.slots %}
+            <article class="doctor-result">
+
+                <div>
+                    <strong>{{ slot.slotTime }}</strong>
+
+                    <p>
+                        Fee ₹{{ slot.consultationFee }}
+                        · {{ slot.freeSeats }} free seat(s)
+                    </p>
+                </div>
+
+                <span class="badge">Available</span>
+
+            </article>
+            {% endfor %}
+
+        {% else %}
+            <p>No available slots in this date range.</p>
+        {% endif %}
+
+    </section>
+    {% endif %}
+
+</main>
+{% endblock %}

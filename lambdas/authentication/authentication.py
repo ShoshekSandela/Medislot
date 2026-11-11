@@ -427,7 +427,8 @@ def login(event):
                     """
                     SELECT patient_id AS profile_id,
                            email,
-                           password_hash
+                           password_hash,
+                           account_status
                     FROM patients
                     WHERE email = %s
                     LIMIT 1
@@ -464,6 +465,8 @@ def login(event):
         if patient:
             account = patient
             role = "patient"
+            if str(account.get("account_status", "ACTIVE")).upper() != "ACTIVE":
+                return response(403, {"message": "Patient account is deactivated"})
         else:
             account = doctor
             role = "doctor"
@@ -550,7 +553,7 @@ def refresh_session(event):
             with conn.cursor() as cur:
                 if role == "patient":
                     cur.execute(
-                        "SELECT patient_id FROM patients WHERE patient_id = %s LIMIT 1",
+                        "SELECT patient_id, account_status FROM patients WHERE patient_id = %s LIMIT 1",
                         (int(profile_id),)
                     )
                 else:
@@ -571,6 +574,8 @@ def refresh_session(event):
 
         if role == "doctor" and str(account.get("profile_status", "")).upper() != "ACTIVE":
             return response(403, {"message": "Doctor profile is pending approval or inactive"})
+        if role == "patient" and str(account.get("account_status", "ACTIVE")).upper() != "ACTIVE":
+            return response(403, {"message": "Patient account is deactivated"})
 
         access_token, _, _ = new_access_token(int(profile_id), role)
 

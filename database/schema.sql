@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS doctors (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (doctor_id),
   UNIQUE KEY uq_doctor_registration (registration_number),
-  UNIQUE KEY uq_doctor_email (email)
+  UNIQUE KEY uq_doctor_email (email),
+  KEY idx_doctor_status_first_name (profile_status, first_name, doctor_id),
+  KEY idx_doctor_status_last_name (profile_status, last_name, doctor_id)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS hospitals (
@@ -50,7 +52,8 @@ CREATE TABLE IF NOT EXISTS hospitals (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (hospital_id),
-  KEY idx_hospital_city (city)
+  KEY idx_hospital_city (city),
+  KEY idx_hospital_name (hospital_name)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS consultation_types (
@@ -78,6 +81,7 @@ CREATE TABLE IF NOT EXISTS patients (
   date_of_birth DATE,
   gender VARCHAR(20),
   phone VARCHAR(20),
+  account_status ENUM('ACTIVE','DEACTIVATED') NOT NULL DEFAULT 'ACTIVE',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (patient_id),
@@ -91,7 +95,8 @@ CREATE TABLE IF NOT EXISTS doctor_specialisations (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (doctor_id, specialisation_id),
   CONSTRAINT fk_ds_doctor FOREIGN KEY (doctor_id) REFERENCES doctors(doctor_id) ON DELETE CASCADE,
-  CONSTRAINT fk_ds_specialisation FOREIGN KEY (specialisation_id) REFERENCES specialisations(specialisation_id)
+  CONSTRAINT fk_ds_specialisation FOREIGN KEY (specialisation_id) REFERENCES specialisations(specialisation_id),
+  KEY idx_doctor_specialisation_search (specialisation_id, doctor_id)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS doctor_hospitals (
@@ -103,7 +108,8 @@ CREATE TABLE IF NOT EXISTS doctor_hospitals (
   PRIMARY KEY (doctor_hospital_id),
   UNIQUE KEY uq_doctor_hospital (doctor_id, hospital_id),
   CONSTRAINT fk_dh_doctor FOREIGN KEY (doctor_id) REFERENCES doctors(doctor_id) ON DELETE CASCADE,
-  CONSTRAINT fk_dh_hospital FOREIGN KEY (hospital_id) REFERENCES hospitals(hospital_id)
+  CONSTRAINT fk_dh_hospital FOREIGN KEY (hospital_id) REFERENCES hospitals(hospital_id),
+  KEY idx_doctor_hospital_search (hospital_id, doctor_id, is_active)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS doctor_blackouts (

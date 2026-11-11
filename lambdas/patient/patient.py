@@ -175,7 +175,7 @@ def lambda_handler(event, context):
                         created_at,
                         updated_at
                     FROM patients
-                    WHERE patient_id = %s
+                    WHERE patient_id = %s AND account_status = 'ACTIVE'
                     LIMIT 1
                     """,
                     (patient_id,)
@@ -330,7 +330,7 @@ def lambda_handler(event, context):
                     UPDATE patients
                     SET {columns},
                         updated_at = CURRENT_TIMESTAMP()
-                    WHERE patient_id = %s
+                    WHERE patient_id = %s AND account_status = 'ACTIVE'
                     """,
                     values
                 )
@@ -344,7 +344,7 @@ def lambda_handler(event, context):
                         """
                         SELECT patient_id
                         FROM patients
-                        WHERE patient_id = %s
+                        WHERE patient_id = %s AND account_status = 'ACTIVE'
                         """,
                         (patient_id,)
                     )
@@ -365,13 +365,29 @@ def lambda_handler(event, context):
             # --------------------------------
 
             if method == "DELETE":
-
-                # Do not hard-delete patient records because
-                # appointments and medical history may reference them.
-
-                return response(409, {
-                    "message": "Patient deletion is disabled",
-                    "details": "Contact support for account deactivation"
+                # Soft-deactivate the account. This preserves appointment and
+                # audit foreign keys while preventing further patient API access.
+                cursor.execute(
+                    """UPDATE patients
+                       SET account_status = 'DEACTIVATED',
+                           updated_at = CURRENT_TIMESTAMP()
+                       WHERE patient_id = %s AND account_status = 'ACTIVE'""",
+                    (patient_id,),
+                )
+                if cursor.rowcount == 0:
+                    cursor.execute(
+                        "SELECT patient_id FROM patients WHERE patient_id = %s",
+                        (patient_id,),
+                    )
+                    if not cursor.fetchone():
+                        return response(404, {"message": "Patient profile not found"})
+                    return response(409, {"message": "Patient account is already deactivated"})
+                connection.commit()
+                logger.info("PATIENT_ACCOUNT_DEACTIVATED patient_id=%s request_id=%s", patient_id, request_id)
+                return response(200, {
+                    "message": "Patient account deactivated successfully",
+                    "patient_id": patient_id,
+                    "account_status": "DEACTIVATED",
                 })
 
     except ValueError as exc:

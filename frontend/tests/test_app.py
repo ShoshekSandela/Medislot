@@ -19,7 +19,26 @@ def test_landing_and_patient(client):
     assert client.get("/").status_code == 200
     response = client.get("/patient/login")
     assert response.status_code == 200
-    assert b"Patient sign-in is not available" in response.data
+    assert b"Patient sign in" in response.data
+    assert client.get("/patient/register").status_code == 200
+
+
+def test_patient_login_dashboard_and_search(client):
+    response = client.post("/patient/login", data={
+        "email": "patient@example.com", "password": "StrongPassword123!"
+    })
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/patient/dashboard")
+    assert client.get("/patient/dashboard").status_code == 200
+    assert client.get("/patient/doctors?name=Test&city=Hyderabad").status_code == 200
+
+
+def test_patient_cannot_access_doctor_workspace(client):
+    with client.session_transaction() as sess:
+        sess["role"] = "patient"
+        sess["accessToken"] = "patient-token"
+    response = client.get("/doctor/dashboard")
+    assert response.status_code == 302
 
 
 def test_login_and_protected_pages(client):
