@@ -30,7 +30,7 @@ def login():
         else:
             try:
                 payload = post("/auth/login", {"email": email, "password": password}, auth=False)
-                if payload.get("role") != "patient":
+                if str(payload.get("role", "")).strip().lower() != "patient":
                     flash("This is not a patient account. Please use the correct login.", "error")
                 else:
                     login_session(payload)
