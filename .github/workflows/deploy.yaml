@@ -231,18 +231,20 @@ jobs:
 
 
   # ==========================================================
-  # JOB 4 - APPLICATION AND FRONTEND STACKS
+  # JOB 4 - APPLICATION STACK
   # ==========================================================
 
-  deploy-frontend:
-    name: Deploy Frontend
+  deploy-application:
+    name: Deploy Application Stack
     runs-on: ubuntu-latest
+
     needs:
       - deploy-network
       - deploy-data
       - deploy-iam
 
     steps:
+
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -379,6 +381,27 @@ jobs:
               ProfilePhotosBucketName="${{ needs.deploy-data.outputs.application_files_bucket }}" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
+  # ==========================================================
+  # JOB 5 - FRONTEND STACK
+  # ==========================================================
+
+  deploy-frontend:
+    name: Package and Deploy Flask Frontend
+    runs-on: ubuntu-latest
+    needs:
+      - deploy-network
+      - deploy-data
+      - deploy-application
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Validate Frontend Files
         shell: bash
