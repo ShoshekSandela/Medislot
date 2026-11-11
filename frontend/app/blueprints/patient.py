@@ -72,7 +72,7 @@ def register():
 @patient_required
 def dashboard():
     profile = _safe_profile()
-    return render_template("patient_dashboard.html", profile=profile, doctors=None, filters={}, selected_doctor=None, availability=None)
+    return render_template("components/patient_dashboard.html", profile=profile, doctors=None, filters={}, selected_doctor=None, availability=None)
 
 
 @bp.post("/profile")
@@ -98,7 +98,7 @@ def search_doctors():
     try:
         result = get("/doctors", params=params)
         profile = _safe_profile()
-        return render_template("patient_dashboard.html", profile=profile, doctors=result, filters=filters, selected_doctor=None, availability=None)
+        return render_template("components/patient_dashboard.html", profile=profile, doctors=result, filters=filters, selected_doctor=None, availability=None)
     except APIError as exc:
         flash(exc.message, "error")
         return redirect(url_for("patient.dashboard"))
@@ -114,7 +114,7 @@ def doctor_detail(doctor_id):
         selected = get(f"/doctors/{doctor_id}")
         availability = get(f"/doctors/{doctor_id}/slots", params={"start_date": start_date, "end_date": end_date})
         profile = _safe_profile()
-        return render_template("patient_dashboard.html", profile=profile, doctors=None, filters={}, selected_doctor=selected, availability=availability)
+        return render_template("components/patient_dashboard.html", profile=profile, doctors=None, filters={}, selected_doctor=selected, availability=availability)
     except APIError as exc:
         flash(exc.message, "error")
         return redirect(url_for("patient.dashboard"))
