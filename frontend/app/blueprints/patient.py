@@ -30,7 +30,7 @@ def login():
         else:
             try:
                 payload = post("/auth/login", {"email": email, "password": password}, auth=False)
-                if str(payload.get("role", "")).strip().lower() != "patient":
+                if payload.get("role") != "patient":
                     flash("This is not a patient account. Please use the correct login.", "error")
                 else:
                     login_session(payload)
@@ -38,7 +38,10 @@ def login():
                     session["patient_name"] = (profile.get("first_name", "") + " " + (profile.get("last_name") or "")).strip() or "Patient"
                     return redirect(url_for("patient.dashboard"))
             except APIError as exc:
-                flash(exc.message, "error")
+                message = exc.message or "Unable to sign in."
+                if exc.status == 401 and any(term in message.lower() for term in ("not found", "does not exist", "invalid email", "user not found")):
+                    message = "Patient account not found. Create a patient account to continue."
+                flash(message, "error")
     return render_template("patient_login.html")
 
 
