@@ -332,6 +332,15 @@ jobs:
             exit 1
           fi
 
+          # Every Lambda module must define lambda_handler. A truncated file would
+          # otherwise deploy fine and fail at runtime with an opaque 5xx.
+          for module in authentication authorizer doctor patient slot_materializer; do
+            if ! grep -q "^def lambda_handler" "$PACKAGE_DIR/lambdas/$module/$module.py"; then
+              echo "ERROR: lambdas/$module/$module.py does not define lambda_handler."
+              exit 1
+            fi
+          done
+
           # Create ZIP
           (
             cd "$PACKAGE_DIR"
