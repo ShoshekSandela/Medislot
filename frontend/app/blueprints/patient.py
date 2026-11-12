@@ -75,18 +75,18 @@ def dashboard():
     profile = _safe_profile()
     doctors = None
     try:
-        # Empty filters intentionally return every active doctor, paginated.
+        # Load the first page for the overview and the full capped directory
+        # for dynamic search-filter options (the API caps page_size at 100).
         doctors = get("/doctors", params={"page": 1, "page_size": 10})
+        directory = get("/doctors", params={"page": 1, "page_size": 100})
     except APIError as exc:
         flash(exc.message, "error")
-
+        directory = doctors or {"doctors": [], "pagination": {"total": 0, "total_pages": 1, "page": 1}}
     return render_template(
         "components/patient_dashboard.html",
-        profile=profile,
-        doctors=doctors,
-        filters={},
-        selected_doctor=None,
-        availability=None,
+        profile=profile, doctors=doctors, directory=directory,
+        filters={}, selected_doctor=None, availability=None,
+        bookings=None, active_page="overview",
     )
 
 
@@ -100,7 +100,7 @@ def update_profile():
         flash("Your profile was updated successfully.", "success")
     except APIError as exc:
         flash(exc.message, "error")
-    return redirect(url_for("patient.dashboard"))
+    return redirect(url_for("patient.dashboard") + "#profile")
 
 
 @bp.get("/doctors")
@@ -112,8 +112,17 @@ def search_doctors():
     params["page_size"] = request.args.get("page_size", "10")
     try:
         result = get("/doctors", params=params)
+        try:
+            directory = get("/doctors", params={"page": 1, "page_size": 100})
+        except APIError:
+            directory = result
         profile = _safe_profile()
-        return render_template("components/patient_dashboard.html", profile=profile, doctors=result, filters=filters, selected_doctor=None, availability=None)
+        return render_template(
+            "components/patient_dashboard.html", profile=profile,
+            doctors=result, directory=directory, filters=filters,
+            selected_doctor=None, availability=None, bookings=None,
+            active_page="search-results",
+        )
     except APIError as exc:
         flash(exc.message, "error")
         return redirect(url_for("patient.dashboard"))
@@ -129,10 +138,43 @@ def doctor_detail(doctor_id):
         selected = get(f"/doctors/{doctor_id}")
         availability = get(f"/doctors/{doctor_id}/slots", params={"start_date": start_date, "end_date": end_date})
         profile = _safe_profile()
-        return render_template("components/patient_dashboard.html", profile=profile, doctors=None, filters={}, selected_doctor=selected, availability=availability)
+        try:
+            directory = get("/doctors", params={"page": 1, "page_size": 100})
+        except APIError:
+            directory = {"doctors": [], "pagination": {"total": 0, "total_pages": 1, "page": 1}}
+        return render_template(
+            "components/patient_dashboard.html", profile=profile,
+            doctors=None, directory=directory, filters={},
+            selected_doctor=selected, availability=availability,
+            bookings=None, active_page="doctor-detail",
+        )
     except APIError as exc:
         flash(exc.message, "error")
         return redirect(url_for("patient.dashboard"))
+
+
+@bp.get("/booking-history")
+@patient_required
+def booking_history():
+    profile = _safe_profile()
+    try:
+        result = get("/patients/appointments")
+        bookings = result.get("appointments", result) if isinstance(result, dict) else result
+        if not isinstance(bookings, list):
+            bookings = []
+    except APIError as exc:
+        flash(exc.message, "error")
+        bookings = None
+    try:
+        directory = get("/doctors", params={"page": 1, "page_size": 100})
+    except APIError:
+        directory = {"doctors": [], "pagination": {"total": 0, "total_pages": 1, "page": 1}}
+    return render_template(
+        "components/patient_dashboard.html", profile=profile,
+        doctors=None, directory=directory, filters={},
+        selected_doctor=None, availability=None, bookings=bookings,
+        active_page="booking-history",
+    )
 
 
 @bp.post("/logout")

@@ -1,8 +1,9 @@
 """MediSlot Patient Lambda: authenticated patient profile operations.
 
 Supported routes:
-  GET    /patients  - retrieve the authenticated patient's profile
-  PUT    /patients  - update the authenticated patient's profile
+  GET    /patients             - retrieve the authenticated patient's profile
+  PUT    /patients             - update the authenticated patient's profile
+  GET    /patients/appointments - retrieve only the authenticated patient's bookings
 
 Account deactivation is intentionally not implemented here because the current
 patients table may not contain an account_status column. No schema migration or
@@ -22,6 +23,7 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 secrets_client = boto3.client("secretsmanager")
+s3_client = boto3.client("s3")
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -234,8 +236,14 @@ def lambda_handler(event, context):
                 "message": "Patient account deactivation is not available until the database supports it."
             })
 
+        is_booking_history = (
+            method == "GET"
+            and path.rstrip("/") in {"/patients/appointments", "/patient/appointments"}
+        )
         if method not in {"GET", "PUT"}:
             return response(405, {"message": "Method not allowed"})
+        if method == "PUT" and path.rstrip("/") != "/patients":
+            return response(404, {"message": "Route not found"})
 
         body = parse_body(event) if method == "PUT" else {}
         updates = validate_profile_updates(body) if method == "PUT" else None
@@ -244,6 +252,70 @@ def lambda_handler(event, context):
         connection = connect_db()
 
         with connection.cursor() as cursor:
+            if is_booking_history:
+                logger.info("Patient step 3: retrieving booking history patient_id=%s", patient_id)
+                cursor.execute(
+                    """
+                    SELECT
+                        a.appointment_id,
+                        a.slot_id,
+                        a.start_at_ist,
+                        a.end_at_ist,
+                        a.timezone,
+                        a.status,
+                        a.created_at,
+                        d.doctor_id,
+                        d.first_name AS doctor_first_name,
+                        d.last_name AS doctor_last_name,
+                        d.qualification,
+                        d.profile_photo_url,
+                        h.hospital_name,
+                        h.branch_name,
+                        h.city,
+                        ct.type_name AS consultation_type,
+                        ct.duration_minutes,
+                        ct.consultation_fee,
+                        (
+                            SELECT GROUP_CONCAT(DISTINCT s.specialisation_name
+                                ORDER BY s.specialisation_name SEPARATOR ', ')
+                            FROM doctor_specialisations ds
+                            JOIN specialisations s
+                              ON s.specialisation_id = ds.specialisation_id
+                             AND s.is_active = TRUE
+                            WHERE ds.doctor_id = d.doctor_id
+                        ) AS specialisations
+                    FROM appointments a
+                    JOIN doctors d ON d.doctor_id = a.doctor_id
+                    JOIN hospitals h ON h.hospital_id = a.hospital_id
+                    JOIN consultation_types ct
+                      ON ct.consultation_type_id = a.consultation_type_id
+                    WHERE a.patient_id = %s
+                    ORDER BY a.start_at_ist DESC, a.appointment_id DESC
+                    """,
+                    (patient_id,),
+                )
+                appointments = cursor.fetchall()
+                bucket = os.environ.get("PROFILE_PHOTOS_BUCKET")
+                for appointment in appointments:
+                    photo_key = appointment.get("profile_photo_url")
+                    appointment["profile_photo_display_url"] = None
+                    if bucket and photo_key:
+                        try:
+                            appointment["profile_photo_display_url"] = s3_client.generate_presigned_url(
+                                "get_object",
+                                Params={"Bucket": bucket, "Key": photo_key},
+                                ExpiresIn=3600,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Could not sign doctor photo for booking history appointment_id=%s",
+                                appointment.get("appointment_id"),
+                            )
+                return response(200, {
+                    "message": "Patient booking history retrieved successfully",
+                    "appointments": appointments,
+                })
+
             if method == "GET":
                 logger.info("Patient step 3: retrieving profile patient_id=%s", patient_id)
                 cursor.execute(

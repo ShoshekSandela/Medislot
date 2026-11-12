@@ -1,14 +1,32 @@
 {% extends 'base.html' %}
 {% block body %}
+{% set ns = namespace(names=[], hospitals=[], specialisations=[], cities=[]) %}
+{% for item in (directory.doctors if directory and directory.doctors else []) %}
+  {% set full_name = ('Dr. ' ~ item.first_name ~ ' ' ~ (item.last_name or '')).strip() %}
+  {% if full_name not in ns.names %}{% set ns.names = ns.names + [full_name] %}{% endif %}
+  {% for value in (item.hospitals or '').split(',') %}
+    {% set value = value.strip() %}
+    {% if value and value not in ns.hospitals %}{% set ns.hospitals = ns.hospitals + [value] %}{% endif %}
+  {% endfor %}
+  {% for value in (item.specialisations or '').split(',') %}
+    {% set value = value.strip() %}
+    {% if value and value not in ns.specialisations %}{% set ns.specialisations = ns.specialisations + [value] %}{% endif %}
+  {% endfor %}
+  {% for value in (item.city or '').split(',') %}
+    {% set value = value.strip() %}
+    {% if value and value not in ns.cities %}{% set ns.cities = ns.cities + [value] %}{% endif %}
+  {% endfor %}
+{% endfor %}
 <div class="app-shell patient-app">
   <aside class="sidebar" id="sidebar">
-    <a class="brand" href="{{ url_for('patient.dashboard') }}"><span class="brand-mark">✚</span> MediSlot</a>
+    <a class="brand" href="{{ url_for('patient.dashboard') }}#overview"><span class="brand-mark">✚</span> MediSlot</a>
     <div class="nav-label">PATIENT WORKSPACE</div>
-    <nav>
-      <a class="active" href="{{ url_for('patient.dashboard') }}#overview">⌂ <span>Overview</span></a>
-      <a href="{{ url_for('patient.dashboard') }}#profile">◉ <span>My profile</span></a>
-      <a href="{{ url_for('patient.dashboard') }}#find-doctors">⌕ <span>Find doctors</span></a>
-      <a href="{{ url_for('patient.dashboard') }}#search-results">▦ <span>Search results</span></a>
+    <nav class="patient-nav">
+      <a href="#overview" data-patient-nav="overview" class="{{ 'active' if active_page == 'overview' else '' }}">⌂ <span>Overview</span></a>
+      <a href="#profile" data-patient-nav="profile" class="{{ 'active' if active_page == 'profile' else '' }}">◉ <span>My profile</span></a>
+      <a href="#find-doctors" data-patient-nav="find-doctors" class="{{ 'active' if active_page in ['find-doctors', 'doctor-detail'] else '' }}">⌕ <span>Find doctors</span></a>
+      <a href="#search-results" data-patient-nav="search-results" class="{{ 'active' if active_page in ['search-results', 'doctor-detail'] else '' }}">▦ <span>Search results</span></a>
+      <a href="{{ url_for('patient.booking_history') }}" data-patient-nav="booking-history" class="{{ 'active' if active_page == 'booking-history' else '' }}">▤ <span>My Booking History</span></a>
     </nav>
     <div class="sidebar-bottom">
       <div class="secure-note">⌑ <span>Your account is private<br><small>Protected patient access</small></span></div>
@@ -22,7 +40,7 @@
   <main class="main-area">
     <header class="topbar">
       <button class="icon-button mobile-menu" aria-label="Open navigation" data-menu>☰</button>
-      <div class="breadcrumbs">Patient workspace <span>/</span> Overview</div>
+      <div class="breadcrumbs">Patient workspace <span>/</span> <span data-page-title>Overview</span></div>
       <div class="top-actions">
         <button class="icon-button" data-theme-toggle aria-label="Toggle theme">◐</button>
         <div class="user-chip">
@@ -32,163 +50,166 @@
       </div>
     </header>
 
-    <div class="content">
-      <section class="page-heading" id="overview">
-        <div>
-          <span class="eyebrow">PATIENT</span>
-          <h1>Welcome, {{ session.get('patient_name', 'Patient') }}</h1>
-          <p>Manage your details and find the right doctor for your care.</p>
+    <div class="content patient-content">
+      <section class="patient-page" id="overview" data-patient-page="overview">
+        <div class="page-heading">
+          <div><span class="eyebrow">PATIENT</span><h1>Welcome, {{ session.get('patient_name', 'Patient') }}</h1><p>Manage your details and find the right doctor for your care.</p></div>
+          <a class="btn primary" href="#find-doctors">Find a doctor <span>→</span></a>
         </div>
-        <a class="btn primary" href="#find-doctors">Find a doctor <span>→</span></a>
-      </section>
-
-      <div class="stat-grid patient-stat-grid">
-        <article class="panel stat-card"><span>My account</span><strong>Active</strong><small>Your patient profile is ready</small></article>
-        <article class="panel stat-card"><span>Doctor discovery</span><strong>Explore</strong><small>Search by name, hospital, speciality or city</small></article>
-        <article class="panel stat-card"><span>Consultation slots</span><strong>Browse</strong><small>Check availability before booking</small></article>
-      </div>
-
-      <section class="panel" id="profile">
-        <div class="toolbar">
-          <div><h2>My profile</h2><p class="muted">Keep your contact and personal details up to date.</p></div>
-          <span class="status-pill good">Patient profile</span>
+        <div class="stat-grid patient-stat-grid">
+          <article class="panel stat-card"><span>My account</span><strong>Active</strong><small>Your patient profile is ready</small></article>
+          <article class="panel stat-card"><span>Doctor discovery</span><strong>Explore</strong><small>Search by name, hospital, speciality or city</small></article>
+          <article class="panel stat-card"><span>Consultation slots</span><strong>Browse</strong><small>Check availability before booking</small></article>
         </div>
-        <form method="post" action="{{ url_for('patient.update_profile') }}" class="form-grid">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <label>First name<input name="first_name" maxlength="100" value="{{ profile.get('first_name', '') }}" required></label>
-          <label>Last name<input name="last_name" maxlength="100" value="{{ profile.get('last_name', '') or '' }}"></label>
-          <label>Email address<input type="email" value="{{ profile.get('email', '') }}" readonly></label>
-          <label>Phone number<input name="phone" maxlength="20" value="{{ profile.get('phone', '') or '' }}"></label>
-          <label>Date of birth<input type="date" name="date_of_birth" value="{{ profile.get('date_of_birth', '') or '' }}"></label>
-          <label>Gender<select name="gender">
-            <option value="">Prefer not to say</option>
-            {% for value in ['male', 'female', 'other', 'prefer_not_to_say'] %}
-            <option value="{{ value }}" {% if profile.get('gender') == value %}selected{% endif %}>{{ value.replace('_', ' ')|title }}</option>
-            {% endfor %}
-          </select></label>
-          <div class="form-actions"><button class="btn primary" type="submit">Save profile</button></div>
-        </form>
+        <div class="panel patient-welcome-panel">
+          <h2>Welcome to your patient workspace</h2>
+          <p class="muted">Use the menu to update your profile, find doctors, check available consultation slots, and review your appointments.</p>
+          <div class="patient-quick-links"><a class="btn secondary" href="#find-doctors">Find doctors</a><a class="btn secondary" href="{{ url_for('patient.booking_history') }}">My Booking History</a></div>
+        </div>
       </section>
 
-      <section class="panel" id="find-doctors">
-        <div class="toolbar"><div><h2>Find doctors</h2><p class="muted">Search across MediSlot hospitals and specialisations.</p></div></div>
-        <form method="get" action="{{ url_for('patient.search_doctors') }}" class="form-grid">
-          <label>Doctor name<input name="name" value="{{ filters.get('name', '') }}" placeholder="e.g. Anil"></label>
-          <label>Hospital<input name="hospital" value="{{ filters.get('hospital', '') }}" placeholder="Hospital name"></label>
-          <label>Specialisation<input name="specialisation" value="{{ filters.get('specialisation', '') }}" placeholder="e.g. Cardiology"></label>
-          <label>City<input name="city" value="{{ filters.get('city', '') }}" placeholder="e.g. Hyderabad"></label>
-          <input type="hidden" name="page" value="1">
-          <input type="hidden" name="page_size" value="10">
-          <div class="form-actions"><button class="btn primary" type="submit">Search doctors →</button></div>
-        </form>
+      <section class="patient-page" id="profile" data-patient-page="profile" hidden>
+        <section class="panel">
+          <div class="toolbar"><div><h2>My profile</h2><p class="muted">Keep your contact and personal details up to date.</p></div><span class="status-pill good">Patient profile</span></div>
+          <form method="post" action="{{ url_for('patient.update_profile') }}" class="form-grid">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label>First name<input name="first_name" maxlength="100" value="{{ profile.get('first_name', '') }}" required></label>
+            <label>Last name<input name="last_name" maxlength="100" value="{{ profile.get('last_name', '') or '' }}"></label>
+            <label>Email address<input type="email" value="{{ profile.get('email', '') }}" readonly></label>
+            <label>Phone number<input name="phone" maxlength="20" value="{{ profile.get('phone', '') or '' }}"></label>
+            <label>Date of birth<input type="date" name="date_of_birth" value="{{ profile.get('date_of_birth', '') or '' }}"></label>
+            <label>Gender<select name="gender"><option value="">Prefer not to say</option>{% for value in ['male', 'female', 'other', 'prefer_not_to_say'] %}<option value="{{ value }}" {% if profile.get('gender') == value %}selected{% endif %}>{{ value.replace('_', ' ')|title }}</option>{% endfor %}</select></label>
+            <div class="form-actions"><button class="btn primary" type="submit">Save profile</button></div>
+          </form>
+        </section>
+        <section class="panel patient-account-actions">
+          <div><h2>Account settings</h2><p class="muted">You can deactivate your patient account if you no longer need it.</p></div>
+          <form method="post" action="{{ url_for('patient.deactivate_account') }}" data-confirm="Deactivate your patient account? You will no longer be able to sign in."><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn danger-ghost small-btn" type="submit">Deactivate account</button></form>
+        </section>
       </section>
 
-      {% if doctors is not none %}
-      <section class="panel" id="search-results">
-        <div class="toolbar">
-          <div>
-            <span class="eyebrow">DOCTOR DIRECTORY</span>
-            <h2>{% if filters and (filters.get('name') or filters.get('hospital') or filters.get('specialisation') or filters.get('city')) %}Doctors matching your search{% else %}Available doctors{% endif %}</h2>
-            <p class="muted">{{ doctors.pagination.total }} active doctor(s) registered in MediSlot</p>
+      <section class="patient-page" id="find-doctors" data-patient-page="find-doctors" hidden>
+        <section class="panel">
+          <div class="toolbar"><div><h2>Find doctors</h2><p class="muted">Choose from doctors, hospitals, specialisations and cities currently registered in MediSlot.</p></div></div>
+          <form method="get" action="{{ url_for('patient.search_doctors') }}" class="form-grid">
+            <label>Doctor name<select name="name"><option value="">All doctors</option>{% for value in ns.names|sort %}<option value="{{ value|replace('Dr. ', '') }}" {% if filters.get('name') == value|replace('Dr. ', '') %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
+            <label>Hospital<select name="hospital"><option value="">All hospitals</option>{% for value in ns.hospitals|sort %}<option value="{{ value }}" {% if filters.get('hospital') == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
+            <label>Specialisation<select name="specialisation"><option value="">All specialisations</option>{% for value in ns.specialisations|sort %}<option value="{{ value }}" {% if filters.get('specialisation') == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
+            <label>City<select name="city"><option value="">All cities</option>{% for value in ns.cities|sort %}<option value="{{ value }}" {% if filters.get('city') == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
+            <input type="hidden" name="page" value="1"><input type="hidden" name="page_size" value="10">
+            <div class="form-actions"><button class="btn primary" type="submit">Search doctors →</button></div>
+          </form>
+          {% if not ns.names %}<p class="muted patient-dropdown-note">No active doctors are currently available to populate the filters.</p>{% endif %}
+        </section>
+      </section>
+
+      <section class="patient-page" id="search-results" data-patient-page="search-results" hidden>
+        {% if doctors is not none %}
+        <section class="panel">
+          <div class="toolbar"><div><span class="eyebrow">DOCTOR DIRECTORY</span><h2>{% if filters and (filters.get('name') or filters.get('hospital') or filters.get('specialisation') or filters.get('city')) %}Doctors matching your search{% else %}Available doctors{% endif %}</h2><p class="muted">{{ doctors.pagination.total }} active doctor(s) registered in MediSlot</p></div><span class="status-pill good">Page {{ doctors.pagination.page }} of {{ doctors.pagination.total_pages or 1 }}</span></div>
+          <div class="patient-doctor-grid">
+            {% for doctor in doctors.doctors %}
+            <article class="panel patient-doctor-card">
+              <div class="patient-doctor-avatar">
+                {% if doctor.profile_photo_display_url %}<img class="patient-doctor-photo" src="{{ doctor.profile_photo_display_url }}" alt="Dr. {{ doctor.first_name }} {{ doctor.last_name or '' }}" loading="lazy" onerror="this.hidden=true;this.nextElementSibling.hidden=false">{% endif %}
+                <div class="avatar large patient-photo-fallback" {% if doctor.profile_photo_display_url %}hidden{% endif %}>{{ (doctor.first_name or 'D')[0]|upper }}</div>
+              </div>
+              <div class="patient-doctor-info"><h3>Dr. {{ doctor.first_name }} {{ doctor.last_name or '' }}</h3><p>{{ doctor.qualification or 'Qualification not listed' }}</p><small>{{ doctor.experience_years or 0 }} years experience</small>{% if doctor.specialisations %}<p class="doctor-meta"><strong>Specialisation:</strong> {{ doctor.specialisations }}</p>{% endif %}{% if doctor.hospitals %}<p class="doctor-meta"><strong>Hospital:</strong> {{ doctor.hospitals }}</p>{% endif %}{% if doctor.city %}<p class="doctor-meta"><strong>City:</strong> {{ doctor.city }}</p>{% endif %}<div class="doctor-active-label"><span></span> Registered &amp; active</div></div>
+              <a class="btn secondary small-btn" href="{{ url_for('patient.doctor_detail', doctor_id=doctor.doctor_id) }}">View profile &amp; slots</a>
+            </article>
+            {% else %}<div class="empty-state"><div class="empty-icon">⌕</div><h3>No active doctors found</h3><p>Try changing your filters or browse all doctors.</p><a class="btn secondary small-btn" href="{{ url_for('patient.dashboard') }}#find-doctors">Change filters</a></div>{% endfor %}
           </div>
-          <span class="status-pill good">Page {{ doctors.pagination.page }} of {{ doctors.pagination.total_pages or 1 }}</span>
-        </div>
-        <div class="patient-doctor-grid">
-          {% for doctor in doctors.doctors %}
-          <article class="panel patient-doctor-card">
-            {% if doctor.profile_photo_url %}
-            <img class="patient-doctor-photo" src="{{ doctor.profile_photo_url }}" alt="Dr. {{ doctor.first_name }} {{ doctor.last_name or '' }}" loading="lazy">
-            {% else %}
-            <div class="avatar large">{{ (doctor.first_name or 'D')[0]|upper }}</div>
-            {% endif %}
-            <div class="patient-doctor-info">
-              <h3>Dr. {{ doctor.first_name }} {{ doctor.last_name or '' }}</h3>
-              <p>{{ doctor.qualification or 'Qualification not listed' }}</p>
-              <small>{{ doctor.experience_years or 0 }} years experience</small>
-              {% if doctor.specialisations %}
-              <p class="doctor-meta"><strong>Specialisation:</strong> {{ doctor.specialisations }}</p>
-              {% endif %}
-              {% if doctor.hospitals %}
-              <p class="doctor-meta"><strong>Hospital:</strong> {{ doctor.hospitals }}</p>
-              {% endif %}
-              {% if doctor.city %}
-              <p class="doctor-meta"><strong>City:</strong> {{ doctor.city }}</p>
-              {% endif %}
-              <div class="doctor-active-label"><span></span> Registered &amp; active</div>
-            </div>
-            <a class="btn secondary small-btn" href="{{ url_for('patient.doctor_detail', doctor_id=doctor.doctor_id) }}">View profile &amp; slots</a>
-          </article>
-          {% else %}
-          <div class="empty-state">
-            <div class="empty-icon">⌕</div>
-            <h3>No active doctors found</h3>
-            <p>{% if filters and (filters.get('name') or filters.get('hospital') or filters.get('specialisation') or filters.get('city')) %}Try removing some filters or searching another city.{% else %}No doctors have an active profile in MediSlot yet. Doctors will appear here after their profiles are activated.{% endif %}</p>
-            {% if filters and (filters.get('name') or filters.get('hospital') or filters.get('specialisation') or filters.get('city')) %}
-            <a class="btn secondary small-btn" href="{{ url_for('patient.dashboard') }}#search-results">Browse all doctors</a>
-            {% endif %}
-          </div>
-          {% endfor %}
-        </div>
-        {% if doctors.pagination.total_pages > 1 %}
-        <div class="patient-pagination">
-          {% if doctors.pagination.has_previous %}
-          <a class="btn secondary small-btn" href="{{ url_for('patient.search_doctors', name=filters.get('name', ''), hospital=filters.get('hospital', ''), specialisation=filters.get('specialisation', ''), city=filters.get('city', ''), page=doctors.pagination.page - 1, page_size=doctors.pagination.page_size) }}#search-results">← Previous</a>
+          {% if doctors.pagination.total_pages > 1 %}
+          <div class="patient-pagination">{% if doctors.pagination.has_previous %}<a class="btn secondary small-btn" href="{{ url_for('patient.search_doctors', name=filters.get('name', ''), hospital=filters.get('hospital', ''), specialisation=filters.get('specialisation', ''), city=filters.get('city', ''), page=doctors.pagination.page - 1, page_size=doctors.pagination.page_size) }}#search-results">← Previous</a>{% endif %}<span>Page {{ doctors.pagination.page }} of {{ doctors.pagination.total_pages }}</span>{% if doctors.pagination.has_next %}<a class="btn secondary small-btn" href="{{ url_for('patient.search_doctors', name=filters.get('name', ''), hospital=filters.get('hospital', ''), specialisation=filters.get('specialisation', ''), city=filters.get('city', ''), page=doctors.pagination.page + 1, page_size=doctors.pagination.page_size) }}#search-results">Next →</a>{% endif %}</div>
           {% endif %}
-          <span>Page {{ doctors.pagination.page }} of {{ doctors.pagination.total_pages }}</span>
-          {% if doctors.pagination.has_next %}
-          <a class="btn secondary small-btn" href="{{ url_for('patient.search_doctors', name=filters.get('name', ''), hospital=filters.get('hospital', ''), specialisation=filters.get('specialisation', ''), city=filters.get('city', ''), page=doctors.pagination.page + 1, page_size=doctors.pagination.page_size) }}#search-results">Next →</a>
-          {% endif %}
-        </div>
+        </section>
+        {% else %}
+        <div class="panel empty-state"><div class="empty-icon">▦</div><h2>Search results</h2><p>Use Find doctors to search the active doctor directory.</p><a class="btn primary" href="#find-doctors">Find doctors</a></div>
         {% endif %}
       </section>
-      {% endif %}
 
-      {% if selected_doctor %}
-      <section class="panel" id="doctor-details">
-        <div class="toolbar"><div><span class="eyebrow">DOCTOR PROFILE</span><h2>Dr. {{ selected_doctor.first_name }} {{ selected_doctor.last_name or '' }}</h2><p class="muted">{{ selected_doctor.qualification or 'Qualification not listed' }} · {{ selected_doctor.experience_years or 0 }} years experience</p></div><span class="status-pill good">Public profile</span></div>
-        <div class="patient-detail-grid">
-          <div><h3>Specialisations</h3><p>{% for item in selected_doctor.specialisations or [] %}{{ item.specialisation_name }}{% if not loop.last %}, {% endif %}{% else %}Not listed{% endfor %}</p></div>
-          <div><h3>Hospitals</h3>{% for hospital in selected_doctor.hospitals or [] %}<p>{{ hospital.hospital_name }}{% if hospital.branch_name %} – {{ hospital.branch_name }}{% endif %}, {{ hospital.city }}</p>{% else %}<p>Hospital details unavailable.</p>{% endfor %}</div>
-        </div>
-        <h3>Consultation types and fees</h3>
-        <div class="patient-type-grid">{% for item in selected_doctor.consultation_types or [] %}<article class="slot-card"><strong>{{ item.type_name }}</strong><p>{{ item.duration_minutes }} minutes</p><span>₹{{ item.consultation_fee }}</span></article>{% else %}<p class="muted">No active consultation types listed.</p>{% endfor %}</div>
-        <h3 class="patient-section-title">Available consultation slots</h3>
-        <form method="get" action="{{ url_for('patient.doctor_detail', doctor_id=selected_doctor.doctor_id) }}" class="field-row patient-date-filter">
-          <label>From<input type="date" name="start_date" value="{{ request.args.get('start_date', availability.start_date if availability else '') }}" required></label>
-          <label>To<input type="date" name="end_date" value="{{ request.args.get('end_date', availability.end_date if availability else '') }}" required></label>
-          <div><button class="btn secondary" type="submit">Refresh slots</button></div>
-        </form>
-        {% if availability and availability.slots %}
-        <div class="patient-slot-grid">{% for slot in availability.slots %}<article class="slot-card"><div class="card-top"><strong>{{ slot.slotTime }}</strong><span class="status-pill good">Available</span></div><p>Consultation fee: ₹{{ slot.consultationFee }}</p><small>{{ slot.freeSeats }} free seat(s)</small></article>{% endfor %}</div>
-        {% else %}<div class="empty-state compact-empty"><div class="empty-icon">◷</div><h3>No available slots</h3><p>There are no free slots in this date range. Try another date range.</p></div>{% endif %}
+      <section class="patient-page" id="doctor-detail" data-patient-page="doctor-detail" hidden>
+        {% if selected_doctor %}
+        <section class="panel">
+          <div class="toolbar"><div><span class="eyebrow">DOCTOR PROFILE</span><h2>Dr. {{ selected_doctor.first_name }} {{ selected_doctor.last_name or '' }}</h2><p class="muted">{{ selected_doctor.qualification or 'Qualification not listed' }} · {{ selected_doctor.experience_years or 0 }} years experience</p></div><span class="status-pill good">Public profile</span></div>
+          <div class="patient-profile-summary">
+            {% set detail_photo = selected_doctor.profile_photo_display_url %}
+            <div class="patient-doctor-avatar">{% if detail_photo %}<img class="patient-doctor-photo" src="{{ detail_photo }}" alt="Doctor profile picture" onerror="this.hidden=true;this.nextElementSibling.hidden=false">{% endif %}<div class="avatar large patient-photo-fallback" {% if detail_photo %}hidden{% endif %}>{{ (selected_doctor.first_name or 'D')[0]|upper }}</div></div>
+            <div class="patient-detail-grid"><div><h3>Specialisations</h3><p>{% for item in selected_doctor.specialisations or [] %}{{ item.specialisation_name }}{% if not loop.last %}, {% endif %}{% else %}Not listed{% endfor %}</p></div><div><h3>Hospitals</h3>{% for hospital in selected_doctor.hospitals or [] %}<p>{{ hospital.hospital_name }}{% if hospital.branch_name %} – {{ hospital.branch_name }}{% endif %}, {{ hospital.city }}</p>{% else %}<p>Hospital details unavailable.</p>{% endfor %}</div></div>
+          </div>
+          <h3>Consultation types and fees</h3>
+          <div class="patient-type-grid">{% for item in selected_doctor.consultation_types or [] %}<article class="slot-card"><strong>{{ item.type_name }}</strong><p>{{ item.duration_minutes }} minutes</p><span>₹{{ item.consultation_fee }}</span></article>{% else %}<p class="muted">No active consultation types listed.</p>{% endfor %}</div>
+          <h3 class="patient-section-title">Available consultation slots</h3>
+          <form method="get" action="{{ url_for('patient.doctor_detail', doctor_id=selected_doctor.doctor_id) }}" class="field-row patient-date-filter"><label>From<input type="date" name="start_date" value="{{ request.args.get('start_date', availability.start_date if availability else '') }}" required></label><label>To<input type="date" name="end_date" value="{{ request.args.get('end_date', availability.end_date if availability else '') }}" required></label><div><button class="btn secondary" type="submit">Refresh slots</button></div></form>
+          {% if availability and availability.slots %}<div class="patient-slot-grid">{% for slot in availability.slots %}<article class="slot-card"><div class="card-top"><strong>{{ slot.slotTime }}</strong><span class="status-pill good">Available</span></div><p>Consultation fee: ₹{{ slot.consultationFee }}</p><small>{{ slot.freeSeats }} free seat(s)</small></article>{% endfor %}</div>{% else %}<div class="empty-state compact-empty"><div class="empty-icon">◷</div><h3>No available slots</h3><p>There are no free slots in this date range. Try another date range.</p></div>{% endif %}
+          <div class="patient-back-link"><a class="btn secondary small-btn" href="#search-results">← Back to search results</a></div>
+        </section>
+        {% else %}<div class="panel empty-state"><h2>Doctor details unavailable</h2><a class="btn secondary" href="#find-doctors">Find doctors</a></div>{% endif %}
       </section>
-      {% endif %}
 
-      <section class="panel patient-account-actions">
-        <div><h2>Account settings</h2><p class="muted">You can deactivate your patient account if you no longer need it.</p></div>
-        <form method="post" action="{{ url_for('patient.deactivate_account') }}" data-confirm="Deactivate your patient account? You will no longer be able to sign in.">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button class="btn danger-ghost small-btn" type="submit">Deactivate account</button>
-        </form>
+      <section class="patient-page" id="booking-history" data-patient-page="booking-history" hidden>
+        <section class="panel">
+          <div class="toolbar"><div><span class="eyebrow">APPOINTMENTS</span><h2>My Booking History</h2><p class="muted">Appointments associated with your patient account.</p></div></div>
+          {% if bookings is none %}
+          <div class="empty-state"><div class="empty-icon">!</div><h3>Booking history could not be loaded</h3><p>Please try again. If the issue continues, contact support.</p><a class="btn secondary" href="{{ url_for('patient.booking_history') }}#booking-history">Try again</a></div>
+          {% elif bookings %}
+          <div class="patient-booking-list">
+            {% for booking in bookings %}
+            <article class="panel patient-booking-card">
+              <div class="patient-doctor-avatar">{% if booking.profile_photo_display_url %}<img class="patient-doctor-photo" src="{{ booking.profile_photo_display_url }}" alt="Dr. {{ booking.doctor_first_name }}" onerror="this.hidden=true;this.nextElementSibling.hidden=false">{% endif %}<div class="avatar large patient-photo-fallback" {% if booking.profile_photo_display_url %}hidden{% endif %}>{{ (booking.doctor_first_name or 'D')[0]|upper }}</div></div>
+              <div class="patient-booking-info"><h3>Dr. {{ booking.doctor_first_name }} {{ booking.doctor_last_name or '' }}</h3><p>{{ booking.specialisations or 'Specialisation not listed' }}</p><p><strong>Hospital:</strong> {{ booking.hospital_name }}{% if booking.branch_name %} – {{ booking.branch_name }}{% endif %}, {{ booking.city }}</p><p><strong>Appointment:</strong> {{ booking.start_at_ist }} – {{ booking.end_at_ist }} IST</p><p><strong>Consultation:</strong> {{ booking.consultation_type }} · {{ booking.duration_minutes }} minutes</p><small>Booking reference: {{ booking.appointment_id }}{% if booking.slot_id %} · Slot: {{ booking.slot_id }}{% endif %}</small></div>
+              {% set status = booking.status|upper %}
+              <span class="status-pill {{ 'good' if status == 'BOOKED' else 'warning' if status == 'RESCHEDULED' else 'muted-pill' }}">{{ status|replace('_', ' ')|title }}</span>
+            </article>
+            {% endfor %}
+          </div>
+          {% else %}
+          <div class="empty-state"><div class="empty-icon">▤</div><h3>No appointments yet</h3><p>Your confirmed appointments will appear here once they are booked.</p><a class="btn primary" href="#find-doctors">Find a doctor</a></div>
+          {% endif %}
+        </section>
       </section>
     </div>
   </main>
 </div>
 <style>
+.patient-content{max-width:1400px;min-width:0}.patient-page[hidden]{display:none!important}
 .patient-stat-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+.patient-welcome-panel{margin-top:18px}.patient-quick-links{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
 .patient-doctor-grid,.patient-slot-grid,.patient-type-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
-.patient-doctor-card{margin:0;display:flex;align-items:center;gap:14px;min-width:0}
+.patient-doctor-card{margin:0;display:flex;align-items:center;gap:14px;min-width:0;flex-wrap:wrap}
 .patient-doctor-card h3{margin:0 0 4px;font-size:15px}.patient-doctor-card p,.patient-doctor-card small{margin:0;color:var(--muted)}
-.patient-doctor-info{flex:1;min-width:0}.patient-doctor-info .doctor-meta{margin:5px 0 0;font-size:12px;color:var(--muted);line-height:1.45}.patient-doctor-info .doctor-meta strong{color:var(--text)}.patient-doctor-card .btn{white-space:nowrap}
-.patient-doctor-photo{width:58px;height:58px;flex:0 0 58px;border-radius:50%;object-fit:cover;border:2px solid var(--border)}
+.patient-doctor-info{flex:1;min-width:160px}.patient-doctor-info .doctor-meta{margin:5px 0 0;font-size:12px;color:var(--muted);line-height:1.45;overflow-wrap:anywhere}.patient-doctor-info .doctor-meta strong{color:var(--text)}.patient-doctor-card .btn{white-space:nowrap}
+.patient-doctor-avatar{width:76px;height:76px;flex:0 0 76px;border-radius:50%;overflow:hidden;display:grid;place-items:center}
+.patient-doctor-photo{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block;border:2px solid var(--border,var(--line))}
+.patient-photo-fallback{width:100%;height:100%}
 .doctor-active-label{display:flex;align-items:center;gap:6px;margin-top:7px;font-size:11px;color:var(--success,#35a987);font-weight:700}
 .doctor-active-label span{width:7px;height:7px;border-radius:50%;background:currentColor;display:inline-block}
-.patient-pagination{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:22px;flex-wrap:wrap}
-.patient-pagination span{font-size:13px;color:var(--muted)}
-.patient-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:18px 0}.patient-detail-grid h3,.patient-section-title{font-size:14px}.patient-type-grid{margin:12px 0 22px}.patient-type-grid .slot-card,.patient-slot-grid .slot-card{padding:16px}.patient-type-grid p,.patient-slot-grid p{margin:7px 0;color:var(--muted)}.patient-type-grid span{font-weight:700;color:var(--primary)}
+.patient-pagination{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:22px;flex-wrap:wrap}.patient-pagination span{font-size:13px;color:var(--muted)}
+.patient-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:0}.patient-detail-grid h3,.patient-section-title{font-size:14px}.patient-type-grid{margin:12px 0 22px}.patient-type-grid .slot-card,.patient-slot-grid .slot-card{padding:16px}.patient-type-grid p,.patient-slot-grid p{margin:7px 0;color:var(--muted)}.patient-type-grid span{font-weight:700;color:var(--primary)}
 .patient-date-filter{align-items:end;margin:12px 0 18px}.patient-account-actions{display:flex;align-items:center;justify-content:space-between;gap:16px}.patient-account-actions h2{margin-bottom:4px}.patient-account-actions p{margin:0}
-.compact-empty{padding:22px}.patient-app .content{max-width:1400px}
+.compact-empty{padding:22px}.patient-back-link{margin-top:20px}.patient-dropdown-note{margin-top:14px}
+.patient-profile-summary{display:flex;align-items:flex-start;gap:20px;margin:20px 0}.patient-booking-list{display:grid;gap:14px}.patient-booking-card{margin:0;display:flex;align-items:center;gap:18px;min-width:0}.patient-booking-info{flex:1;min-width:0}.patient-booking-info h3{margin:0 0 5px}.patient-booking-info p{font-size:13px;margin:5px 0;color:var(--muted);overflow-wrap:anywhere}.patient-booking-info small{color:var(--muted);overflow-wrap:anywhere}
 @media(max-width:900px){.patient-stat-grid{grid-template-columns:1fr 1fr}.patient-doctor-grid,.patient-slot-grid,.patient-type-grid{grid-template-columns:1fr}}
-@media(max-width:650px){.patient-stat-grid,.patient-detail-grid{grid-template-columns:1fr}.patient-doctor-card{align-items:flex-start;flex-wrap:wrap}.patient-account-actions{align-items:flex-start;flex-direction:column}.patient-date-filter{grid-template-columns:1fr}}
+@media(max-width:650px){.patient-stat-grid,.patient-detail-grid{grid-template-columns:1fr}.patient-doctor-card{align-items:flex-start}.patient-account-actions{align-items:flex-start;flex-direction:column}.patient-date-filter{grid-template-columns:1fr}.patient-profile-summary,.patient-booking-card{align-items:flex-start;flex-wrap:wrap}.patient-booking-info{flex-basis:calc(100% - 100px)}.patient-page .toolbar{align-items:flex-start;flex-wrap:wrap}}
 </style>
+<script>
+(function(){
+  const pages=[...document.querySelectorAll('[data-patient-page]')];
+  const links=[...document.querySelectorAll('[data-patient-nav]')];
+  const titles={overview:'Overview',profile:'My profile','find-doctors':'Find doctors','search-results':'Search results','booking-history':'My Booking History','doctor-detail':'Doctor profile'};
+  function showPage(name){
+    if(!pages.some(p=>p.dataset.patientPage===name)) name='overview';
+    pages.forEach(p=>{p.hidden=p.dataset.patientPage!==name;});
+    links.forEach(a=>a.classList.toggle('active',a.dataset.patientNav===name));
+    const title=document.querySelector('[data-page-title]');if(title)title.textContent=titles[name]||'Overview';
+    document.querySelector('#sidebar')?.classList.remove('open');
+  }
+  function route(){showPage((location.hash||'#{{ active_page or "overview" }}').slice(1));}
+  window.addEventListener('hashchange',route);
+  links.forEach(a=>a.addEventListener('click',()=>showPage(a.dataset.patientNav)));
+  document.querySelectorAll('a[href="#find-doctors"]').forEach(a=>a.addEventListener('click',()=>showPage('find-doctors')));
+  document.querySelectorAll('a[href="#search-results"]').forEach(a=>a.addEventListener('click',()=>showPage('search-results')));
+  route();
+})();
+</script>
 {% endblock %}

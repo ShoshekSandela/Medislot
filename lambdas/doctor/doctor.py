@@ -695,6 +695,25 @@ def list_doctors(connection, query_params=None):
 
         doctors = cursor.fetchall()
 
+    # Search results need a browser-readable, short-lived URL rather than the
+    # private S3 object key stored in doctors.profile_photo_url.
+    photo_bucket = os.environ.get("PROFILE_PHOTOS_BUCKET")
+    for doctor in doctors:
+        doctor["profile_photo_display_url"] = None
+        photo_key = doctor.get("profile_photo_url")
+        if photo_bucket and photo_key:
+            try:
+                doctor["profile_photo_display_url"] = s3_client.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": photo_bucket, "Key": photo_key},
+                    ExpiresIn=3600,
+                )
+            except Exception:
+                logger.exception(
+                    "Could not create public doctor photo URL doctor_id=%s",
+                    doctor.get("doctor_id"),
+                )
+
     return {
         "doctors": doctors,
 

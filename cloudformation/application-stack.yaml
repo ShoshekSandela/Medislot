@@ -222,6 +222,7 @@ Resources:
           DB_SECRET_ARN: !Ref DatabaseSecretArn
           DB_HOST: !Ref DatabaseHost
           DB_NAME: !Ref DatabaseName
+          PROFILE_PHOTOS_BUCKET: !Ref ProfilePhotosBucketName
       Tags:
         - Key: Project
           Value: MediSlot
@@ -419,6 +420,7 @@ Resources:
   # GET /patients
   # PUT /patients
   # DELETE /patients
+  # GET /patients/appointments
   # =========================================================
 
   PatientsResource:
@@ -473,6 +475,28 @@ Resources:
           - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
           - FunctionArn: !GetAtt PatientLambda.Arn
 
+  PatientAppointmentsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ParentId: !Ref PatientsResource
+      PathPart: appointments
+
+  PatientAppointmentsGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref PatientAppointmentsResource
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref MediSlotApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt PatientLambda.Arn
+
   # =========================================================
   # LAMBDA INVOCATION PERMISSIONS
   # =========================================================
@@ -502,7 +526,7 @@ Resources:
       FunctionName: !Ref PatientLambda
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub
-        arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/*/patients
+        arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/*/patients*
 
   AuthorizerApiPermission:
     Type: AWS::Lambda::Permission
@@ -520,7 +544,7 @@ Resources:
   # NOTE: API Gateway only publishes new routes when a NEW deployment is created.
   # CloudFormation creates one only when this logical ID changes, so bump the
   # suffix (V2 -> V3 ...) whenever routes or methods are added or changed.
-  MediSlotApiDeploymentV2:
+  MediSlotApiDeploymentV3:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - AuthMethod
@@ -531,6 +555,7 @@ Resources:
       - PatientsGetMethod
       - PatientsPutMethod
       - PatientsDeleteMethod
+      - PatientAppointmentsGetMethod
     Properties:
       RestApiId: !Ref MediSlotApi
       Description: !Sub MediSlot ${Environment} API deployment
@@ -543,7 +568,7 @@ Resources:
       - ApiGatewayAccount
     Properties:
       RestApiId: !Ref MediSlotApi
-      DeploymentId: !Ref MediSlotApiDeploymentV2
+      DeploymentId: !Ref MediSlotApiDeploymentV3
       StageName: !Ref Environment
       AccessLogSetting:
         DestinationArn: !GetAtt ApiGatewayAccessLogGroup.Arn
