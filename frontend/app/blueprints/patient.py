@@ -33,10 +33,9 @@ def login():
                 if payload.get("role") != "patient":
                     flash("This is not a patient account. Please use the correct login.", "error")
                 else:
-                    # Do not fetch the profile during login and again on the
-                    # dashboard. The dashboard performs the single profile GET.
                     login_session(payload)
-                    session["patient_name"] = "Patient"
+                    profile = _safe_profile()
+                    session["patient_name"] = (profile.get("first_name", "") + " " + (profile.get("last_name") or "")).strip() or "Patient"
                     return redirect(url_for("patient.dashboard"))
             except APIError as exc:
                 message = exc.message or "Unable to sign in."
@@ -72,8 +71,23 @@ def register():
 @bp.get("/dashboard")
 @patient_required
 def dashboard():
+    """Show the patient profile and the first page of active doctors."""
     profile = _safe_profile()
-    return render_template("components/patient_dashboard.html", profile=profile, doctors=None, filters={}, selected_doctor=None, availability=None)
+    doctors = None
+    try:
+        # Empty filters intentionally return every active doctor, paginated.
+        doctors = get("/doctors", params={"page": 1, "page_size": 10})
+    except APIError as exc:
+        flash(exc.message, "error")
+
+    return render_template(
+        "components/patient_dashboard.html",
+        profile=profile,
+        doctors=doctors,
+        filters={},
+        selected_doctor=None,
+        availability=None,
+    )
 
 
 @bp.post("/profile")

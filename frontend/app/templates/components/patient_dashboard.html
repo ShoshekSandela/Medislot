@@ -83,27 +83,54 @@
         </form>
       </section>
 
-      {% if doctors %}
+      {% if doctors is not none %}
       <section class="panel" id="search-results">
         <div class="toolbar">
-          <div><h2>Doctors matching your search</h2><p class="muted">{{ doctors.pagination.total }} result(s) found</p></div>
-          <span class="status-pill">Page {{ doctors.pagination.page }} of {{ doctors.pagination.total_pages }}</span>
+          <div>
+            <span class="eyebrow">DOCTOR DIRECTORY</span>
+            <h2>{% if filters and (filters.get('name') or filters.get('hospital') or filters.get('specialisation') or filters.get('city')) %}Doctors matching your search{% else %}Available doctors{% endif %}</h2>
+            <p class="muted">{{ doctors.pagination.total }} active doctor(s) registered in MediSlot</p>
+          </div>
+          <span class="status-pill good">Page {{ doctors.pagination.page }} of {{ doctors.pagination.total_pages or 1 }}</span>
         </div>
         <div class="patient-doctor-grid">
           {% for doctor in doctors.doctors %}
           <article class="panel patient-doctor-card">
+            {% if doctor.profile_photo_url %}
+            <img class="patient-doctor-photo" src="{{ doctor.profile_photo_url }}" alt="Dr. {{ doctor.first_name }} {{ doctor.last_name or '' }}" loading="lazy">
+            {% else %}
             <div class="avatar large">{{ (doctor.first_name or 'D')[0]|upper }}</div>
+            {% endif %}
             <div class="patient-doctor-info">
               <h3>Dr. {{ doctor.first_name }} {{ doctor.last_name or '' }}</h3>
               <p>{{ doctor.qualification or 'Qualification not listed' }}</p>
               <small>{{ doctor.experience_years or 0 }} years experience</small>
+              <div class="doctor-active-label"><span></span> Registered &amp; active</div>
             </div>
-            <a class="btn secondary small-btn" href="{{ url_for('patient.doctor_detail', doctor_id=doctor.doctor_id) }}">View profile & slots</a>
+            <a class="btn secondary small-btn" href="{{ url_for('patient.doctor_detail', doctor_id=doctor.doctor_id) }}">View profile &amp; slots</a>
           </article>
           {% else %}
-          <div class="empty-state"><div class="empty-icon">⌕</div><h3>No doctors found</h3><p>Try changing the doctor name, hospital, specialisation or city.</p></div>
+          <div class="empty-state">
+            <div class="empty-icon">⌕</div>
+            <h3>No active doctors found</h3>
+            <p>{% if filters and (filters.get('name') or filters.get('hospital') or filters.get('specialisation') or filters.get('city')) %}Try removing some filters or searching another city.{% else %}No doctors have an active profile in MediSlot yet. Doctors will appear here after their profiles are activated.{% endif %}</p>
+            {% if filters and (filters.get('name') or filters.get('hospital') or filters.get('specialisation') or filters.get('city')) %}
+            <a class="btn secondary small-btn" href="{{ url_for('patient.dashboard') }}#search-results">Browse all doctors</a>
+            {% endif %}
+          </div>
           {% endfor %}
         </div>
+        {% if doctors.pagination.total_pages > 1 %}
+        <div class="patient-pagination">
+          {% if doctors.pagination.has_previous %}
+          <a class="btn secondary small-btn" href="{{ url_for('patient.search_doctors', name=filters.get('name', ''), hospital=filters.get('hospital', ''), specialisation=filters.get('specialisation', ''), city=filters.get('city', ''), page=doctors.pagination.page - 1, page_size=doctors.pagination.page_size) }}#search-results">← Previous</a>
+          {% endif %}
+          <span>Page {{ doctors.pagination.page }} of {{ doctors.pagination.total_pages }}</span>
+          {% if doctors.pagination.has_next %}
+          <a class="btn secondary small-btn" href="{{ url_for('patient.search_doctors', name=filters.get('name', ''), hospital=filters.get('hospital', ''), specialisation=filters.get('specialisation', ''), city=filters.get('city', ''), page=doctors.pagination.page + 1, page_size=doctors.pagination.page_size) }}#search-results">Next →</a>
+          {% endif %}
+        </div>
+        {% endif %}
       </section>
       {% endif %}
 
@@ -144,6 +171,11 @@
 .patient-doctor-card{margin:0;display:flex;align-items:center;gap:14px;min-width:0}
 .patient-doctor-card h3{margin:0 0 4px;font-size:15px}.patient-doctor-card p,.patient-doctor-card small{margin:0;color:var(--muted)}
 .patient-doctor-info{flex:1;min-width:0}.patient-doctor-card .btn{white-space:nowrap}
+.patient-doctor-photo{width:58px;height:58px;flex:0 0 58px;border-radius:50%;object-fit:cover;border:2px solid var(--border)}
+.doctor-active-label{display:flex;align-items:center;gap:6px;margin-top:7px;font-size:11px;color:var(--success,#35a987);font-weight:700}
+.doctor-active-label span{width:7px;height:7px;border-radius:50%;background:currentColor;display:inline-block}
+.patient-pagination{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:22px;flex-wrap:wrap}
+.patient-pagination span{font-size:13px;color:var(--muted)}
 .patient-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:18px 0}.patient-detail-grid h3,.patient-section-title{font-size:14px}.patient-type-grid{margin:12px 0 22px}.patient-type-grid .slot-card,.patient-slot-grid .slot-card{padding:16px}.patient-type-grid p,.patient-slot-grid p{margin:7px 0;color:var(--muted)}.patient-type-grid span{font-weight:700;color:var(--primary)}
 .patient-date-filter{align-items:end;margin:12px 0 18px}.patient-account-actions{display:flex;align-items:center;justify-content:space-between;gap:16px}.patient-account-actions h2{margin-bottom:4px}.patient-account-actions p{margin:0}
 .compact-empty{padding:22px}.patient-app .content{max-width:1400px}
