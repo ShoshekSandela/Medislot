@@ -33,9 +33,10 @@ def login():
                 if payload.get("role") != "patient":
                     flash("This is not a patient account. Please use the correct login.", "error")
                 else:
+                    # Do not fetch the profile during login and again on the
+                    # dashboard. The dashboard performs the single profile GET.
                     login_session(payload)
-                    profile = _safe_profile()
-                    session["patient_name"] = (profile.get("first_name", "") + " " + (profile.get("last_name") or "")).strip() or "Patient"
+                    session["patient_name"] = "Patient"
                     return redirect(url_for("patient.dashboard"))
             except APIError as exc:
                 message = exc.message or "Unable to sign in."
