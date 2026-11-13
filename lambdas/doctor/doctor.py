@@ -1557,15 +1557,18 @@ def get_public_doctor(connection, doctor_id):
 
 @log_execution
 def public_doctor_slots(connection, doctor_id, query_params):
-    """Free, bookable slots for one active doctor within an IST date range."""
+    """Return free, bookable slots using the doctor-time GSI."""
     query_params = query_params or {}
     today_ist = datetime.now(IST).date()
+
     try:
         start_date = datetime.strptime(
-            query_params.get("start_date") or today_ist.isoformat(), "%Y-%m-%d"
+            query_params.get("start_date") or today_ist.isoformat(),
+            "%Y-%m-%d",
         ).date()
         end_date = datetime.strptime(
-            query_params.get("end_date") or (today_ist + timedelta(days=7)).isoformat(),
+            query_params.get("end_date")
+            or (today_ist + timedelta(days=7)).isoformat(),
             "%Y-%m-%d",
         ).date()
     except ValueError:
@@ -1581,18 +1584,34 @@ def public_doctor_slots(connection, doctor_id, query_params):
         raise RuntimeError("SLOTS_TABLE_NAME is not configured")
 
     table = dynamodb.Table(table_name)
-    filter_expression = (
-        Attr("doctorId").eq(str(doctor_id))
-        & Attr("slotTime").between(
-            start_date.isoformat() + "T00:00:00",
-            end_date.isoformat() + "T23:59:59",
-        )
+    # slotTime is stored as an ISO-8601 IST string. Use an exclusive
+    # midnight boundary for the day after end_date so the whole final day
+    # is included without relying on string comparisons at 23:59:59.
+    start_key = start_date.isoformat() + "T00:00:00"
+    end_exclusive = (end_date + timedelta(days=1)).isoformat() + "T00:00:00"
+
+    logger.info(
+        "Public slot lookup: table=%s index=doctor-time-index doctor_id=%s "
+        "start=%s end_exclusive=%s",
+        table_name, doctor_id, start_key, end_exclusive,
     )
-    result = table.scan(FilterExpression=filter_expression)
-    items = result.get("Items", [])
+
+    key_condition = (
+        Key("doctorId").eq(str(doctor_id))
+        & Key("slotTime").gte(start_key)
+        & Key("slotTime").lt(end_exclusive)
+    )
+    items = []
+    result = table.query(
+        IndexName="doctor-time-index",
+        KeyConditionExpression=key_condition,
+    )
+    items.extend(result.get("Items", []))
+
     while result.get("LastEvaluatedKey"):
-        result = table.scan(
-            FilterExpression=filter_expression,
+        result = table.query(
+            IndexName="doctor-time-index",
+            KeyConditionExpression=key_condition,
             ExclusiveStartKey=result["LastEvaluatedKey"],
         )
         items.extend(result.get("Items", []))
@@ -1600,17 +1619,33 @@ def public_doctor_slots(connection, doctor_id, query_params):
     now_ist = datetime.now(IST).replace(tzinfo=None).isoformat(timespec="seconds")
     slots = []
     for item in items:
-        capacity = int(item.get("capacity", 1))
-        booked = int(item.get("bookedCount", 0))
+        try:
+            capacity = int(item.get("capacity", 1))
+            booked = int(item.get("bookedCount", 0))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Skipping malformed slot counters doctor_id=%s slot_id=%s",
+                doctor_id, item.get("slotId"),
+            )
+            continue
+
         if str(item.get("status", "")).upper() != "AVAILABLE":
             continue
         if item.get("isBlackout") is True or booked >= capacity:
             continue
         if str(item.get("slotTime", ""))[:19] <= now_ist:
             continue
+
         item["freeSeats"] = capacity - booked
         slots.append(item)
+
     slots.sort(key=lambda item: item.get("slotTime", ""))
+
+    logger.info(
+        "Public slot lookup complete: doctor_id=%s returned_slots=%s "
+        "scanned_items=%s",
+        doctor_id, len(slots), len(items),
+    )
 
     return {
         "doctor_id": int(doctor_id),
