@@ -1542,11 +1542,16 @@ def get_public_doctor(connection, doctor_id):
 
         cursor.execute(
             """
-            SELECT consultation_type_id, type_name, duration_minutes,
-                   capacity, description, consultation_fee
-            FROM consultation_types
-            WHERE doctor_id = %s AND is_active = TRUE
-            ORDER BY type_name
+            SELECT DISTINCT ct.consultation_type_id, ct.type_name,
+                   ct.duration_minutes, ct.capacity, ct.description,
+                   ct.consultation_fee
+            FROM consultation_types ct
+            INNER JOIN doctor_availability da
+                ON da.consultation_type_id = ct.consultation_type_id
+            WHERE da.doctor_id = %s
+              AND da.is_active = TRUE
+              AND ct.is_active = TRUE
+            ORDER BY ct.type_name
             """,
             (doctor_id,),
         )

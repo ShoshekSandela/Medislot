@@ -11,6 +11,10 @@ from ..auth import clear_session, login_session, patient_required
 bp = Blueprint("patient", __name__, url_prefix="/patient")
 
 
+def _today_ist():
+    return datetime.now(ZoneInfo("Asia/Kolkata")).date()
+
+
 def _safe_profile():
     try:
         data = get("/patients")
@@ -84,7 +88,7 @@ def dashboard():
         directory = doctors or {"doctors": [], "pagination": {"total": 0, "total_pages": 1, "page": 1}}
     return render_template(
         "components/patient_dashboard.html",
-        profile=profile, doctors=doctors, directory=directory,
+        profile=profile, doctors=doctors, directory=directory, today=_today_ist().isoformat(),
         filters={}, selected_doctor=None, availability=None,
         bookings=None, active_page="overview",
     )
@@ -95,6 +99,16 @@ def dashboard():
 def update_profile():
     fields = ("first_name", "last_name", "phone", "date_of_birth", "gender")
     body = {field: request.form.get(field) or None for field in fields if field in request.form}
+    dob = body.get("date_of_birth")
+    if dob:
+        try:
+            parsed_dob = date.fromisoformat(dob)
+        except (TypeError, ValueError):
+            flash("Enter a valid date of birth.", "error")
+            return redirect(url_for("patient.dashboard") + "#profile")
+        if parsed_dob > _today_ist():
+            flash("Date of birth cannot be in the future.", "error")
+            return redirect(url_for("patient.dashboard") + "#profile")
     try:
         put("/patients", body)
         flash("Your profile was updated successfully.", "success")
@@ -121,7 +135,7 @@ def search_doctors():
             "components/patient_dashboard.html", profile=profile,
             doctors=result, directory=directory, filters=filters,
             selected_doctor=None, availability=None, bookings=None,
-            active_page="search-results",
+            active_page="find-doctors", today=_today_ist().isoformat(),
         )
     except APIError as exc:
         flash(exc.message, "error")
@@ -131,7 +145,7 @@ def search_doctors():
 @bp.get("/doctors/<int:doctor_id>")
 @patient_required
 def doctor_detail(doctor_id):
-    today_ist = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    today_ist = _today_ist()
     start_date = request.args.get("start_date") or today_ist.isoformat()
     end_date = request.args.get("end_date") or (today_ist + timedelta(days=7)).isoformat()
     try:
@@ -146,7 +160,7 @@ def doctor_detail(doctor_id):
             "components/patient_dashboard.html", profile=profile,
             doctors=None, directory=directory, filters={},
             selected_doctor=selected, availability=availability,
-            bookings=None, active_page="doctor-detail",
+            bookings=None, active_page="doctor-detail", today=today_ist.isoformat(),
         )
     except APIError as exc:
         flash(exc.message, "error")
@@ -173,7 +187,7 @@ def booking_history():
         "components/patient_dashboard.html", profile=profile,
         doctors=None, directory=directory, filters={},
         selected_doctor=None, availability=None, bookings=bookings,
-        active_page="booking-history",
+        active_page="booking-history", today=_today_ist().isoformat(),
     )
 
 

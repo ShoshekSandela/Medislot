@@ -25,7 +25,6 @@
       <a href="#overview" data-patient-nav="overview" class="{{ 'active' if active_page == 'overview' else '' }}">⌂ <span>Overview</span></a>
       <a href="#profile" data-patient-nav="profile" class="{{ 'active' if active_page == 'profile' else '' }}">◉ <span>My profile</span></a>
       <a href="#find-doctors" data-patient-nav="find-doctors" class="{{ 'active' if active_page in ['find-doctors', 'doctor-detail'] else '' }}">⌕ <span>Find doctors</span></a>
-      <a href="#search-results" data-patient-nav="search-results" class="{{ 'active' if active_page in ['search-results', 'doctor-detail'] else '' }}">▦ <span>Search results</span></a>
       <a href="{{ url_for('patient.booking_history') }}" data-patient-nav="booking-history" class="{{ 'active' if active_page == 'booking-history' else '' }}">▤ <span>My Booking History</span></a>
     </nav>
     <div class="sidebar-bottom">
@@ -75,9 +74,9 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <label>First name<input name="first_name" maxlength="100" value="{{ profile.get('first_name', '') }}" required></label>
             <label>Last name<input name="last_name" maxlength="100" value="{{ profile.get('last_name', '') or '' }}"></label>
-            <label>Email address<input type="email" value="{{ profile.get('email', '') }}" readonly></label>
+            <label class="patient-email-field">Email address<div class="patient-email-control"><input type="email" value="{{ profile.get('email', '') }}" readonly aria-readonly="true" title="Email address cannot be edited"><span class="patient-email-lock" aria-hidden="true" title="Email cannot be edited">⊘</span></div></label>
             <label>Phone number<input name="phone" maxlength="20" value="{{ profile.get('phone', '') or '' }}"></label>
-            <label>Date of birth<input type="date" name="date_of_birth" value="{{ profile.get('date_of_birth', '') or '' }}"></label>
+            <label>Date of birth<input type="date" name="date_of_birth" max="{{ today }}" value="{{ profile.get('date_of_birth', '') or '' }}"></label>
             <label>Gender<select name="gender"><option value="">Prefer not to say</option>{% for value in ['male', 'female', 'other', 'prefer_not_to_say'] %}<option value="{{ value }}" {% if profile.get('gender') == value %}selected{% endif %}>{{ value.replace('_', ' ')|title }}</option>{% endfor %}</select></label>
             <div class="form-actions"><button class="btn primary" type="submit">Save profile</button></div>
           </form>
@@ -101,9 +100,7 @@
           </form>
           {% if not ns.names %}<p class="muted patient-dropdown-note">No active doctors are currently available to populate the filters.</p>{% endif %}
         </section>
-      </section>
-
-      <section class="patient-page" id="search-results" data-patient-page="search-results" hidden>
+      <div id="search-results">
         {% if doctors is not none %}
         <section class="panel">
           <div class="toolbar"><div><span class="eyebrow">DOCTOR DIRECTORY</span><h2>{% if filters and (filters.get('name') or filters.get('hospital') or filters.get('specialisation') or filters.get('city')) %}Doctors matching your search{% else %}Available doctors{% endif %}</h2><p class="muted">{{ doctors.pagination.total }} active doctor(s) registered in MediSlot</p></div><span class="status-pill good">Page {{ doctors.pagination.page }} of {{ doctors.pagination.total_pages or 1 }}</span></div>
@@ -120,12 +117,13 @@
             {% else %}<div class="empty-state"><div class="empty-icon">⌕</div><h3>No active doctors found</h3><p>Try changing your filters or browse all doctors.</p><a class="btn secondary small-btn" href="{{ url_for('patient.dashboard') }}#find-doctors">Change filters</a></div>{% endfor %}
           </div>
           {% if doctors.pagination.total_pages > 1 %}
-          <div class="patient-pagination">{% if doctors.pagination.has_previous %}<a class="btn secondary small-btn" href="{{ url_for('patient.search_doctors', name=filters.get('name', ''), hospital=filters.get('hospital', ''), specialisation=filters.get('specialisation', ''), city=filters.get('city', ''), page=doctors.pagination.page - 1, page_size=doctors.pagination.page_size) }}#search-results">← Previous</a>{% endif %}<span>Page {{ doctors.pagination.page }} of {{ doctors.pagination.total_pages }}</span>{% if doctors.pagination.has_next %}<a class="btn secondary small-btn" href="{{ url_for('patient.search_doctors', name=filters.get('name', ''), hospital=filters.get('hospital', ''), specialisation=filters.get('specialisation', ''), city=filters.get('city', ''), page=doctors.pagination.page + 1, page_size=doctors.pagination.page_size) }}#search-results">Next →</a>{% endif %}</div>
+          <div class="patient-pagination">{% if doctors.pagination.has_previous %}<a class="btn secondary small-btn" href="{{ url_for('patient.search_doctors', name=filters.get('name', ''), hospital=filters.get('hospital', ''), specialisation=filters.get('specialisation', ''), city=filters.get('city', ''), page=doctors.pagination.page - 1, page_size=doctors.pagination.page_size) }}#find-doctors">← Previous</a>{% endif %}<span>Page {{ doctors.pagination.page }} of {{ doctors.pagination.total_pages }}</span>{% if doctors.pagination.has_next %}<a class="btn secondary small-btn" href="{{ url_for('patient.search_doctors', name=filters.get('name', ''), hospital=filters.get('hospital', ''), specialisation=filters.get('specialisation', ''), city=filters.get('city', ''), page=doctors.pagination.page + 1, page_size=doctors.pagination.page_size) }}#find-doctors">Next →</a>{% endif %}</div>
           {% endif %}
         </section>
         {% else %}
         <div class="panel empty-state"><div class="empty-icon">▦</div><h2>Search results</h2><p>Use Find doctors to search the active doctor directory.</p><a class="btn primary" href="#find-doctors">Find doctors</a></div>
         {% endif %}
+      </div>
       </section>
 
       <section class="patient-page" id="doctor-detail" data-patient-page="doctor-detail" hidden>
@@ -142,7 +140,7 @@
           <h3 class="patient-section-title">Available consultation slots</h3>
           <form method="get" action="{{ url_for('patient.doctor_detail', doctor_id=selected_doctor.doctor_id) }}" class="field-row patient-date-filter"><label>From<input type="date" name="start_date" value="{{ request.args.get('start_date', availability.start_date if availability else '') }}" required></label><label>To<input type="date" name="end_date" value="{{ request.args.get('end_date', availability.end_date if availability else '') }}" required></label><div><button class="btn secondary" type="submit">Refresh slots</button></div></form>
           {% if availability and availability.slots %}<div class="patient-slot-grid">{% for slot in availability.slots %}<article class="slot-card"><div class="card-top"><strong>{{ slot.slotTime }}</strong><span class="status-pill good">Available</span></div><p>Consultation fee: ₹{{ slot.consultationFee }}</p><small>{{ slot.freeSeats }} free seat(s)</small></article>{% endfor %}</div>{% else %}<div class="empty-state compact-empty"><div class="empty-icon">◷</div><h3>No available slots</h3><p>There are no free slots in this date range. Try another date range.</p></div>{% endif %}
-          <div class="patient-back-link"><a class="btn secondary small-btn" href="#search-results">← Back to search results</a></div>
+          <div class="patient-back-link"><a class="btn secondary small-btn" href="#find-doctors">← Back to doctor search</a></div>
         </section>
         {% else %}<div class="panel empty-state"><h2>Doctor details unavailable</h2><a class="btn secondary" href="#find-doctors">Find doctors</a></div>{% endif %}
       </section>
@@ -173,6 +171,7 @@
 </div>
 <style>
 .patient-content{max-width:1400px;min-width:0}.patient-page[hidden]{display:none!important}
+ .patient-email-control{position:relative;display:flex;align-items:center}.patient-email-control input{width:100%;padding-right:42px;cursor:not-allowed}.patient-email-lock{position:absolute;right:13px;opacity:0;color:var(--muted);pointer-events:none;transition:opacity .15s ease}.patient-email-field:hover .patient-email-lock,.patient-email-field:focus-within .patient-email-lock{opacity:1}
 .patient-stat-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
 .patient-welcome-panel{margin-top:18px}.patient-quick-links{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
 .patient-doctor-grid,.patient-slot-grid,.patient-type-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
@@ -196,11 +195,11 @@
 (function(){
   const pages=[...document.querySelectorAll('[data-patient-page]')];
   const links=[...document.querySelectorAll('[data-patient-nav]')];
-  const titles={overview:'Overview',profile:'My profile','find-doctors':'Find doctors','search-results':'Search results','booking-history':'My Booking History','doctor-detail':'Doctor profile'};
+  const titles={overview:'Overview',profile:'My profile','find-doctors':'Find doctors','booking-history':'My Booking History','doctor-detail':'Doctor profile'};
   function showPage(name){
     if(!pages.some(p=>p.dataset.patientPage===name)) name='overview';
     pages.forEach(p=>{p.hidden=p.dataset.patientPage!==name;});
-    links.forEach(a=>a.classList.toggle('active',a.dataset.patientNav===name));
+    const activeNav=name==='doctor-detail'?'find-doctors':name;links.forEach(a=>a.classList.toggle('active',a.dataset.patientNav===activeNav));
     const title=document.querySelector('[data-page-title]');if(title)title.textContent=titles[name]||'Overview';
     document.querySelector('#sidebar')?.classList.remove('open');
   }
@@ -208,7 +207,6 @@
   window.addEventListener('hashchange',route);
   links.forEach(a=>a.addEventListener('click',()=>showPage(a.dataset.patientNav)));
   document.querySelectorAll('a[href="#find-doctors"]').forEach(a=>a.addEventListener('click',()=>showPage('find-doctors')));
-  document.querySelectorAll('a[href="#search-results"]').forEach(a=>a.addEventListener('click',()=>showPage('search-results')));
   route();
 })();
 </script>
