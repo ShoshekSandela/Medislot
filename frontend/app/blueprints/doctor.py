@@ -1409,70 +1409,85 @@ def blackouts():
         f = request.form
 
         start = f.get("start_date")
-
         end = f.get("end_date") or start
-
-
-
-        if f.get("full_day") == "on":
-
-            start_at, end_at = full_day_range(start, end)
-
-        else:
-
-            start_at = f"{start} {f.get('start_time')}:00"
-
-            end_at = f"{end} {f.get('end_time')}:00"
-
-
+        repeat_weekly = f.get("repeat_weekly") == "on"
 
         try:
+            start_day = date.fromisoformat(start)
+            end_day = date.fromisoformat(end)
 
-            if end_at <= start_at:
+            if end_day < start_day:
+                raise ValueError("End date must be on or after start date")
 
-                raise ValueError("End must be after start")
+            if (end_day - start_day).days > 90:
+                raise ValueError("Blackout date range cannot exceed 90 days")
 
+            if repeat_weekly:
+                # Store one ordinary blackout row for each matching weekday.
+                # This keeps the existing database schema and API unchanged.
+                blackout_dates = []
+                current_day = start_day
+                while current_day <= end_day:
+                    blackout_dates.append(current_day)
+                    current_day += timedelta(days=7)
+            else:
+                # A normal blackout is a single continuous date/time range.
+                blackout_dates = [None]
 
+            results = []
+            for blackout_day in blackout_dates:
+                if repeat_weekly:
+                    if f.get("full_day") == "on":
+                        start_at, end_at = full_day_range(
+                            blackout_day.isoformat(), blackout_day.isoformat()
+                        )
+                    else:
+                        start_at = f"{blackout_day.isoformat()} {f.get('start_time')}:00"
+                        end_at = f"{blackout_day.isoformat()} {f.get('end_time')}:00"
+                elif f.get("full_day") == "on":
+                    start_at, end_at = full_day_range(start, end)
+                else:
+                    start_at = f"{start} {f.get('start_time')}:00"
+                    end_at = f"{end} {f.get('end_time')}:00"
 
-            result = post(
+                if end_at <= start_at:
+                    raise ValueError("End must be after start")
 
-                "/doctors/blackouts",
-
-                {
-
-                    "hospital_id": int(f.get("hospital_id")),
-
-                    "start_at_ist": start_at,
-
-                    "end_at_ist": end_at,
-
-                    "reason": f.get("reason", "").strip()
-
-                }
-
-            )
-
-
+                result = post(
+                    "/doctors/blackouts",
+                    {
+                        "hospital_id": int(f.get("hospital_id")),
+                        "start_at_ist": start_at,
+                        "end_at_ist": end_at,
+                        "reason": f.get("reason", "").strip()
+                    }
+                )
+                results.append(result)
 
             clear_schedule_cache()
 
-
-
-            generation_message(
-
-                result,
-
-                "Blackout added and schedule refreshed.",
-
-                "Blackout saved, but slot refresh failed. Check Lambda logs."
-
+            failed_refresh = any(
+                isinstance(item, dict)
+                and (
+                    item.get("slot_generation", {}).get("status") == "FAILED"
+                    or item.get("slot_generation", {}).get("function_error")
+                )
+                for item in results
             )
-
-
+            if failed_refresh:
+                flash(
+                    "Blackout saved, but slot refresh failed. Check Slot Materializer logs.",
+                    "warning"
+                )
+            else:
+                count = len(results)
+                flash(
+                    f"{count} weekly blackout(s) added and schedule refreshed."
+                    if repeat_weekly else "Blackout added and schedule refreshed.",
+                    "success"
+                )
 
             return redirect(url_for("doctor.blackouts"))
-
-
 
         except (ValueError, APIError) as e:
 
