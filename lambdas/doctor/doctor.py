@@ -1601,10 +1601,12 @@ def public_doctor_slots(connection, doctor_id, query_params):
         table_name, doctor_id, start_key, end_exclusive,
     )
 
+    # DynamoDB permits only one condition for each key in a KeyConditionExpression.
+    # Use BETWEEN for the slotTime sort key so the complete end date is included.
+    end_inclusive = end_date.isoformat() + "T23:59:59"
     key_condition = (
         Key("doctorId").eq(str(doctor_id))
-        & Key("slotTime").gte(start_key)
-        & Key("slotTime").lt(end_exclusive)
+        & Key("slotTime").between(start_key, end_inclusive)
     )
     items = []
     result = table.query(
