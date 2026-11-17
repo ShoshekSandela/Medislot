@@ -777,6 +777,21 @@ def lambda_handler(event, context):
                 "body": ""
             }
 
+        if method == "GET" and path == "/auth/hospitals":
+            # Public read-only catalog used by the doctor registration dropdown.
+            with connect_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT hospital_id, hospital_name, branch_name, city
+                        FROM hospitals
+                        WHERE is_active = TRUE
+                        ORDER BY hospital_name, branch_name, city
+                        """
+                    )
+                    hospitals = cur.fetchall()
+            return response(200, hospitals)
+
         if method == "POST" and path == "/auth/register":
             return register(event)
 

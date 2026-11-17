@@ -145,8 +145,8 @@ def request(method, path, *, json=None, params=None, auth=True, retry=True, file
     return data
 
 
-def get(path, params=None):
-    return request("GET", path, params=params)
+def get(path, params=None, *, auth=True):
+    return request("GET", path, params=params, auth=auth)
 
 
 def post(path, data, auth=True):

@@ -334,7 +334,7 @@ Resources:
     Properties:
       RestApiId: !Ref MediSlotApi
       ResourceId: !Ref AuthProxyResource
-      HttpMethod: POST
+      HttpMethod: ANY
       AuthorizationType: NONE
       Integration:
         Type: AWS_PROXY
@@ -543,8 +543,8 @@ Resources:
 
   # NOTE: API Gateway only publishes new routes when a NEW deployment is created.
   # CloudFormation creates one only when this logical ID changes, so bump the
-  # suffix (V2 -> V3 ...) whenever routes or methods are added or changed.
-  MediSlotApiDeploymentV3:
+  # suffix (V3 -> V4 ...) whenever routes or methods are added or changed.
+  MediSlotApiDeploymentV4:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - AuthMethod
@@ -568,7 +568,7 @@ Resources:
       - ApiGatewayAccount
     Properties:
       RestApiId: !Ref MediSlotApi
-      DeploymentId: !Ref MediSlotApiDeploymentV3
+      DeploymentId: !Ref MediSlotApiDeploymentV4
       StageName: !Ref Environment
       AccessLogSetting:
         DestinationArn: !GetAtt ApiGatewayAccessLogGroup.Arn

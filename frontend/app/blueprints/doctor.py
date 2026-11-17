@@ -274,6 +274,13 @@ def login():
 
 def register():
 
+    hospitals = []
+    try:
+        hospital_result = get("/auth/hospitals", auth=False)
+        hospitals = hospital_result if isinstance(hospital_result, list) else []
+    except APIError as e:
+        flash("Hospital list is temporarily unavailable. You can still register without selecting a hospital.", "warning")
+
     if request.method == "POST":
 
         f = request.form
@@ -394,7 +401,7 @@ def register():
 
 
 
-    return render_template("auth.html", mode="register")
+    return render_template("auth.html", mode="register", hospitals=hospitals)
 
 
 
