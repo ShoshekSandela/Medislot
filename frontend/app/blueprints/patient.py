@@ -53,6 +53,21 @@ def login():
 def register():
     if request.method == "POST":
         form = request.form
+        date_of_birth = form.get("date_of_birth") or None
+        if date_of_birth:
+            try:
+                parsed_dob = date.fromisoformat(date_of_birth)
+            except (TypeError, ValueError):
+                flash("Enter a valid date of birth.", "error")
+                return render_template(
+                    "patient_register.html", today=_today_ist().isoformat()
+                )
+            if parsed_dob > _today_ist():
+                flash("Date of birth cannot be in the future.", "error")
+                return render_template(
+                    "patient_register.html", today=_today_ist().isoformat()
+                )
+
         body = {
             "role": "patient",
             "first_name": form.get("first_name", "").strip(),
@@ -60,7 +75,7 @@ def register():
             "email": form.get("email", "").strip().lower(),
             "password": form.get("password", ""),
             "phone": form.get("phone", "").strip() or None,
-            "date_of_birth": form.get("date_of_birth") or None,
+            "date_of_birth": date_of_birth,
             "gender": form.get("gender") or None,
         }
         try:
@@ -69,7 +84,7 @@ def register():
             return redirect(url_for("patient.login"))
         except APIError as exc:
             flash(exc.message, "error")
-    return render_template("patient_register.html")
+    return render_template("patient_register.html", today=_today_ist().isoformat())
 
 
 @bp.get("/dashboard")
