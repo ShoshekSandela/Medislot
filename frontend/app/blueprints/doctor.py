@@ -1023,12 +1023,9 @@ def consultation_types():
 
 
 
-            if duration <= 0 or fee < 0:
-
+            if not 1 <= duration <= 120 or not 0 <= fee <= 9000:
                 raise ValueError(
-
-                    "Duration must be positive and fee cannot be negative"
-
+                    "Duration must be between 1 and 120 minutes and fee must be between ₹0 and ₹9,000"
                 )
 
 
@@ -1178,8 +1175,6 @@ def availability():
         try:
 
             body = {
-
-                "hospital_id": int(f.get("hospital_id")),
 
                 "consultation_type_id": int(
 
@@ -1463,7 +1458,6 @@ def blackouts():
                 result = post(
                     "/doctors/blackouts",
                     {
-                        "hospital_id": int(f.get("hospital_id")),
                         "start_at_ist": start_at,
                         "end_at_ist": end_at,
                         "reason": f.get("reason", "").strip()

@@ -393,11 +393,26 @@ def get_profile(connection, doctor_id):
         profile["profile_photo_display_url"] = None
 
     if profile:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT h.hospital_id, h.hospital_name, h.branch_name,
+                       h.city, h.state
+                FROM doctor_hospitals dh
+                JOIN hospitals h ON h.hospital_id = dh.hospital_id
+                WHERE dh.doctor_id = %s
+                  AND dh.is_active = TRUE
+                  AND h.is_active = TRUE
+                ORDER BY h.hospital_name, h.branch_name, h.hospital_id
+                """,
+                (doctor_id,),
+            )
+            profile["hospitals"] = cursor.fetchall()
+
         _, selected_specialisations = get_doctor_specialisations(
             connection,
             doctor_id,
         )
-
         profile["specialisations"] = selected_specialisations
 
     return profile
@@ -887,9 +902,9 @@ def consultation_types(connection, doctor_id, method, data, item_id=None):
                 return response(400, {
                     "message": "duration_minutes, capacity and consultation_fee must be numeric"
                 })
-            if not type_name or duration <= 0 or capacity <= 0 or fee < 0:
+            if not type_name or not 1 <= duration <= 120 or capacity <= 0 or not 0 <= fee <= 9000:
                 return response(400, {
-                    "message": "Type name is required; duration/capacity must be positive and fee cannot be negative"
+                    "message": "Type name is required; duration must be 1–120 minutes, capacity must be positive, and fee must be between ₹0 and ₹9,000"
                 })
             if type_name.lower() == "health camp session":
                 if duration != 60 or not 2 <= capacity <= 10:
@@ -956,7 +971,7 @@ def consultation_types(connection, doctor_id, method, data, item_id=None):
             try:
                 if "duration_minutes" in updates:
                     updates["duration_minutes"] = int(updates["duration_minutes"])
-                    if updates["duration_minutes"] <= 0:
+                    if not 1 <= updates["duration_minutes"] <= 120:
                         raise ValueError
                 if "capacity" in updates:
                     updates["capacity"] = int(updates["capacity"])
@@ -964,11 +979,11 @@ def consultation_types(connection, doctor_id, method, data, item_id=None):
                         raise ValueError
                 if "consultation_fee" in updates:
                     updates["consultation_fee"] = float(updates["consultation_fee"])
-                    if updates["consultation_fee"] < 0:
+                    if not 0 <= updates["consultation_fee"] <= 9000:
                         raise ValueError
             except (TypeError, ValueError):
                 return response(400, {
-                    "message": "duration_minutes and capacity must be positive integers; consultation_fee must be non-negative"
+                    "message": "duration_minutes must be 1–120, capacity must be positive, and consultation_fee must be between ₹0 and ₹9,000"
                 })
 
             try:
@@ -1055,10 +1070,11 @@ def availability(connection, doctor_id, method, data, item_id=None):
         if method == "GET":
             cursor.execute(
                 """
-                SELECT *
-                FROM doctor_availability
-                WHERE doctor_id = %s
-                ORDER BY day_of_week, start_time
+                SELECT a.*, h.hospital_name, h.branch_name
+                FROM doctor_availability a
+                JOIN hospitals h ON h.hospital_id = a.hospital_id
+                WHERE a.doctor_id = %s
+                ORDER BY a.day_of_week, a.start_time
                 """,
                 (doctor_id,),
             )
@@ -1066,7 +1082,6 @@ def availability(connection, doctor_id, method, data, item_id=None):
 
         if method in {"POST", "PUT"} and item_id is None:
             required = [
-                "hospital_id",
                 "consultation_type_id",
                 "day_of_week",
                 "start_time",
@@ -1084,11 +1099,30 @@ def availability(connection, doctor_id, method, data, item_id=None):
                 )
 
             try:
-                hospital_id = int(data["hospital_id"])
                 consultation_type_id = int(data["consultation_type_id"])
                 day = int(data["day_of_week"])
             except (TypeError, ValueError):
-                return response(400, {"message": "hospital_id, consultation_type_id and day_of_week must be integers"})
+                return response(400, {"message": "consultation_type_id and day_of_week must be integers"})
+
+            # Hospital is derived from the doctor's active hospital assignment.
+            # If multiple branches are assigned, use the first in stable ID order.
+            cursor.execute(
+                """
+                SELECT dh.hospital_id
+                FROM doctor_hospitals dh
+                JOIN hospitals h ON h.hospital_id = dh.hospital_id
+                WHERE dh.doctor_id = %s
+                  AND dh.is_active = TRUE
+                  AND h.is_active = TRUE
+                ORDER BY dh.hospital_id
+                LIMIT 1
+                """,
+                (doctor_id,),
+            )
+            assigned_hospital = cursor.fetchone()
+            if not assigned_hospital:
+                return response(400, {"message": "No active hospital is assigned to your doctor profile. Contact the administrator."})
+            hospital_id = int(assigned_hospital["hospital_id"])
             if day < 0 or day > 6:
                 return response(400, {"message": "day_of_week must be between 0 (Sunday) and 6 (Saturday)"})
             if data["end_time"] <= data["start_time"]:
@@ -1161,7 +1195,6 @@ def availability(connection, doctor_id, method, data, item_id=None):
 
         if method == "PUT" and item_id:
             allowed = {
-                "hospital_id",
                 "consultation_type_id",
                 "day_of_week",
                 "start_time",
@@ -1271,10 +1304,11 @@ def blackouts(connection, doctor_id, method, data, item_id=None):
         if method == "GET":
             cursor.execute(
                 """
-                SELECT *
-                FROM doctor_blackouts
-                WHERE doctor_id = %s
-                ORDER BY start_at_ist
+                SELECT b.*, h.hospital_name, h.branch_name
+                FROM doctor_blackouts b
+                JOIN hospitals h ON h.hospital_id = b.hospital_id
+                WHERE b.doctor_id = %s
+                ORDER BY b.start_at_ist
                 """,
                 (doctor_id,),
             )
@@ -1291,20 +1325,25 @@ def blackouts(connection, doctor_id, method, data, item_id=None):
                     {"message": "Missing required fields", "fields": missing},
                 )
 
-            if not data.get("hospital_id"):
-                return response(400, {"message": "hospital_id is required"})
             if data["end_at_ist"] <= data["start_at_ist"]:
                 return response(400, {"message": "end_at_ist must be later than start_at_ist"})
-            try:
-                hospital_id = int(data["hospital_id"])
-            except (TypeError, ValueError):
-                return response(400, {"message": "hospital_id must be an integer"})
             cursor.execute(
-                "SELECT 1 FROM doctor_hospitals WHERE doctor_id = %s AND hospital_id = %s AND is_active = TRUE LIMIT 1",
-                (doctor_id, hospital_id),
+                """
+                SELECT dh.hospital_id
+                FROM doctor_hospitals dh
+                JOIN hospitals h ON h.hospital_id = dh.hospital_id
+                WHERE dh.doctor_id = %s
+                  AND dh.is_active = TRUE
+                  AND h.is_active = TRUE
+                ORDER BY dh.hospital_id
+                LIMIT 1
+                """,
+                (doctor_id,),
             )
-            if not cursor.fetchone():
-                return response(400, {"message": "Doctor is not assigned to this hospital"})
+            assigned_hospital = cursor.fetchone()
+            if not assigned_hospital:
+                return response(400, {"message": "No active hospital is assigned to your doctor profile. Contact the administrator."})
+            hospital_id = int(assigned_hospital["hospital_id"])
             cursor.execute(
                 """
                 INSERT INTO doctor_blackouts
