@@ -449,7 +449,8 @@ def login(event):
                     """
                     SELECT patient_id AS profile_id,
                            email,
-                           password_hash
+                           password_hash,
+                           account_status
                     FROM patients
                     WHERE email = %s
                     LIMIT 1
@@ -490,9 +491,13 @@ def login(event):
             account = doctor
             role = "doctor"
 
-        # Verify the password.
+        # Verify the password before returning account-state information.
         if not verify_password(password, account["password_hash"]):
             return response(401, {"message": "Invalid email or password"})
+
+        # Deactivated patient accounts are retained in the database but cannot sign in.
+        if role == "patient" and str(account.get("account_status", "ACTIVE")).upper() != "ACTIVE":
+            return response(403, {"message": "This patient account has been deactivated"})
 
         # Doctors must be approved before login.
         if role == "doctor":
@@ -574,7 +579,7 @@ def refresh_session(event):
             with conn.cursor() as cur:
                 if role == "patient":
                     cur.execute(
-                        "SELECT patient_id FROM patients WHERE patient_id = %s LIMIT 1",
+                        "SELECT patient_id, account_status FROM patients WHERE patient_id = %s LIMIT 1",
                         (int(profile_id),)
                     )
                 else:
@@ -592,6 +597,9 @@ def refresh_session(event):
 
         if not account:
             return response(401, {"message": "Account no longer exists"})
+
+        if role == "patient" and str(account.get("account_status", "ACTIVE")).upper() != "ACTIVE":
+            return response(403, {"message": "This patient account has been deactivated"})
 
         if role == "doctor" and str(account.get("profile_status", "")).upper() != "ACTIVE":
             return response(403, {"message": "Doctor profile is pending approval or inactive"})

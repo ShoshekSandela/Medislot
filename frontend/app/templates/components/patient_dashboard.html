@@ -1,22 +1,5 @@
 {% extends 'base.html' %}
 {% block body %}
-{% set ns = namespace(names=[], hospitals=[], specialisations=[], cities=[]) %}
-{% for item in (directory.doctors if directory and directory.doctors else []) %}
-  {% set full_name = ('Dr. ' ~ item.first_name ~ ' ' ~ (item.last_name or '')).strip() %}
-  {% if full_name not in ns.names %}{% set ns.names = ns.names + [full_name] %}{% endif %}
-  {% for value in (item.hospitals or '').split(',') %}
-    {% set value = value.strip() %}
-    {% if value and value not in ns.hospitals %}{% set ns.hospitals = ns.hospitals + [value] %}{% endif %}
-  {% endfor %}
-  {% for value in (item.specialisations or '').split(',') %}
-    {% set value = value.strip() %}
-    {% if value and value not in ns.specialisations %}{% set ns.specialisations = ns.specialisations + [value] %}{% endif %}
-  {% endfor %}
-  {% for value in (item.city or '').split(',') %}
-    {% set value = value.strip() %}
-    {% if value and value not in ns.cities %}{% set ns.cities = ns.cities + [value] %}{% endif %}
-  {% endfor %}
-{% endfor %}
 <div class="app-shell patient-app">
   <aside class="sidebar" id="sidebar">
     <a class="brand" href="{{ url_for('patient.dashboard') }}#overview"><span class="brand-mark">✚</span> MediSlot</a>
@@ -89,16 +72,15 @@
 
       <section class="patient-page" id="find-doctors" data-patient-page="find-doctors" hidden>
         <section class="panel">
-          <div class="toolbar"><div><h2>Find doctors</h2><p class="muted">Choose from doctors, hospitals, specialisations and cities currently registered in MediSlot.</p></div></div>
+          <div class="toolbar"><div><h2>Find doctors</h2><p class="muted">Search doctors by name, hospital, specialisation or city.</p></div></div>
           <form method="get" action="{{ url_for('patient.search_doctors') }}" class="form-grid">
-            <label>Doctor name<select name="name"><option value="">All doctors</option>{% for value in ns.names|sort %}<option value="{{ value|replace('Dr. ', '') }}" {% if filters.get('name') == value|replace('Dr. ', '') %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
-            <label>Hospital<select name="hospital"><option value="">All hospitals</option>{% for value in ns.hospitals|sort %}<option value="{{ value }}" {% if filters.get('hospital') == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
-            <label>Specialisation<select name="specialisation"><option value="">All specialisations</option>{% for value in ns.specialisations|sort %}<option value="{{ value }}" {% if filters.get('specialisation') == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
-            <label>City<select name="city"><option value="">All cities</option>{% for value in ns.cities|sort %}<option value="{{ value }}" {% if filters.get('city') == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
+            <label>Doctor name<input type="search" name="name" value="{{ filters.get('name', '') }}" placeholder="Search doctor name"></label>
+            <label>Hospital<input type="search" name="hospital" value="{{ filters.get('hospital', '') }}" placeholder="Search hospital"></label>
+            <label>Specialisation<input type="search" name="specialisation" value="{{ filters.get('specialisation', '') }}" placeholder="Search specialisation"></label>
+            <label>City<input type="search" name="city" value="{{ filters.get('city', '') }}" placeholder="Search city"></label>
             <input type="hidden" name="page" value="1"><input type="hidden" name="page_size" value="10">
             <div class="form-actions"><button class="btn primary" type="submit">Search doctors →</button></div>
           </form>
-          {% if not ns.names %}<p class="muted patient-dropdown-note">No active doctors are currently available to populate the filters.</p>{% endif %}
         </section>
       <div id="search-results">
         {% if doctors is not none %}

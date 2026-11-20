@@ -5,9 +5,8 @@ Supported routes:
   PUT    /patients             - update the authenticated patient's profile
   GET    /patients/appointments - retrieve only the authenticated patient's bookings
 
-Account deactivation is intentionally not implemented here because the current
-patients table may not contain an account_status column. No schema migration or
-account_status column is required for profile retrieval and updates.
+Patient deactivation uses a soft delete: the patient row is retained and
+patients.account_status is changed from ACTIVE to DEACTIVATED.
 """
 
 import os
@@ -231,20 +230,18 @@ def lambda_handler(event, context):
         if role != "patient":
             return response(403, {"message": "Patient access required"})
 
-        if method == "DELETE":
-            return response(501, {
-                "message": "Patient account deactivation is not available until the database supports it."
-            })
-
+        is_deactivate = method == "DELETE" and path.rstrip("/") == "/patients"
         is_booking_history = (
             method == "GET"
             and path.rstrip("/") in {"/patients/appointments", "/patient/appointments"}
         )
-        if method not in {"GET", "PUT"}:
+        if method not in {"GET", "PUT", "DELETE"}:
             return response(405, {"message": "Method not allowed"})
         if method == "PUT" and path.rstrip("/") != "/patients":
             return response(404, {"message": "Route not found"})
 
+        if method == "DELETE" and not is_deactivate:
+            return response(404, {"message": "Route not found"})
         body = parse_body(event) if method == "PUT" else {}
         updates = validate_profile_updates(body) if method == "PUT" else None
 
@@ -252,6 +249,32 @@ def lambda_handler(event, context):
         connection = connect_db()
 
         with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT account_status FROM patients WHERE patient_id = %s LIMIT 1",
+                (patient_id,),
+            )
+            account_row = cursor.fetchone()
+            if not account_row:
+                return response(404, {"message": "Patient account not found"})
+            if str(account_row.get("account_status", "ACTIVE")).upper() != "ACTIVE":
+                return response(403, {"message": "This patient account is deactivated"})
+
+            if is_deactivate:
+                logger.info("Patient step 3: soft-deactivating patient_id=%s", patient_id)
+                cursor.execute(
+                    """UPDATE patients
+                       SET account_status = 'DEACTIVATED', updated_at = CURRENT_TIMESTAMP
+                       WHERE patient_id = %s AND account_status = 'ACTIVE'""",
+                    (patient_id,),
+                )
+                connection.commit()
+                logger.info("PATIENT ACCOUNT SOFT-DEACTIVATED patient_id=%s request_id=%s", patient_id, request_id)
+                return response(200, {
+                    "message": "Patient account deactivated successfully",
+                    "patient_id": patient_id,
+                    "account_status": "DEACTIVATED",
+                })
+
             if is_booking_history:
                 logger.info("Patient step 3: retrieving booking history patient_id=%s", patient_id)
                 cursor.execute(
@@ -331,7 +354,7 @@ def lambda_handler(event, context):
                         created_at,
                         updated_at
                     FROM patients
-                    WHERE patient_id = %s
+                    WHERE patient_id = %s AND account_status = 'ACTIVE'
                     LIMIT 1
                     """,
                     (patient_id,),
@@ -360,14 +383,14 @@ def lambda_handler(event, context):
                     f"""
                     UPDATE patients
                     SET {set_clause}, updated_at = CURRENT_TIMESTAMP
-                    WHERE patient_id = %s
+                    WHERE patient_id = %s AND account_status = 'ACTIVE'
                     """,
                     values,
                 )
 
                 # rowcount can be zero when the submitted values equal existing values.
                 cursor.execute(
-                    "SELECT patient_id FROM patients WHERE patient_id = %s LIMIT 1",
+                    "SELECT patient_id FROM patients WHERE patient_id = %s AND account_status = 'ACTIVE' LIMIT 1",
                     (patient_id,),
                 )
                 existing_patient = cursor.fetchone()
