@@ -8,6 +8,7 @@ on:
       - main
       - network
       - feature/iam-stack
+      - appointments
 
 permissions:
   id-token: write
