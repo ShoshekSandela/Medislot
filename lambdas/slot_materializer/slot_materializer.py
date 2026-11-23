@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 import boto3
 import pymysql
-from boto3.dynamodb.conditions import Attr
+from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 
@@ -255,7 +255,7 @@ def create_slot(
     try:
         slots_table.put_item(
             Item=item,
-            ConditionExpression="attribute_not_exists(slotId)",
+            ConditionExpression="attribute_not_exists(doctorId)",
         )
         logger.debug("STEP 4B: DynamoDB slot created slot_id=%s status=%s", slot_id, desired_status)
         return "created_blackout" if blackout else "created"
@@ -270,13 +270,32 @@ def create_slot(
             )
             raise
 
-        logger.debug("STEP 4B: Slot already exists; checking whether safe metadata update is allowed slot_id=%s", slot_id)
+        logger.debug("STEP 4B: Slot key already exists; validating slot identity slot_id=%s", slot_id)
+        existing_response = slots_table.get_item(
+            Key={
+                "doctorId": str(availability["doctor_id"]),
+                "slotTime": start_ist.isoformat(timespec="seconds"),
+            },
+            ConsistentRead=True,
+        )
+        existing_item = existing_response.get("Item", {})
+        if existing_item.get("slotId") != slot_id:
+            raise RuntimeError(
+                "Slots key collision: the same doctorId and slotTime are already "
+                "used by a different hospital or consultation type. "
+                f"doctorId={availability['doctor_id']} "
+                f"slotTime={start_ist.isoformat(timespec='seconds')} "
+                f"existingSlotId={existing_item.get('slotId')} requestedSlotId={slot_id}"
+            )
 
         # Existing slot: update only blackout/status metadata if it has no
         # bookings. Never reset capacity, bookedCount, or other booking data.
         try:
             slots_table.update_item(
-                Key={"slotId": slot_id},
+                Key={
+                    "doctorId": str(availability["doctor_id"]),
+                    "slotTime": start_ist.isoformat(timespec="seconds"),
+                },
                 UpdateExpression=(
                     "SET #status = :status, #is_blackout = :blackout, "
                     "#hospital_id = :hospital_id, "
@@ -286,7 +305,8 @@ def create_slot(
                     "#timezone = :timezone"
                 ),
                 ConditionExpression=(
-                    "attribute_not_exists(bookedCount) OR bookedCount = :zero"
+                    "slotId = :slot_id AND "
+                    "(attribute_not_exists(bookedCount) OR bookedCount = :zero)"
                 ),
                 ExpressionAttributeNames={
                     "#status": "status",
@@ -310,13 +330,17 @@ def create_slot(
                     ":end_time": end_ist.isoformat(timespec="seconds"),
                     ":timezone": "Asia/Kolkata",
                     ":zero": 0,
+                    ":slot_id": slot_id,
                 },
             )
             logger.debug("STEP 4C: Existing unbooked slot metadata refreshed slot_id=%s", slot_id)
         except ClientError as update_error:
             update_code = update_error.response.get("Error", {}).get("Code")
             if update_code == "ConditionalCheckFailedException":
-                logger.info("Existing slot was not changed because it has bookings slot_id=%s", slot_id)
+                logger.info(
+                    "Existing slot was not changed because it has bookings or a doctor/time key collision slot_id=%s",
+                    slot_id,
+                )
             else:
                 logger.exception(
                     "DynamoDB update_item failed for existing slotId=%s",
@@ -352,6 +376,7 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
         "availability_records": len(availability_records),
     }
     generated_slot_ids = set()
+    generated_slot_keys = set()
 
     buffer_minutes = int(
         os.environ.get("SLOT_BUFFER_MINUTES", "15")
@@ -438,6 +463,10 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
                 f"{current_start.isoformat(timespec='seconds')}"
             )
             generated_slot_ids.add(slot_id)
+            generated_slot_keys.add((
+                str(availability["doctor_id"]),
+                current_start.isoformat(timespec="seconds"),
+            ))
             result = create_slot(
                 slots_table,
                 availability,
@@ -469,19 +498,21 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
     # For targeted doctor refreshes, deactivate obsolete unbooked slots for this date.
     # Existing booked slots are never changed or deleted.
     if doctor_id is not None:
-        scan_filter = (
-            Attr("doctorId").eq(str(doctor_id))
-            & Attr("slotTime").begins_with(target_date.isoformat())
+        day_start = target_date.isoformat() + "T00:00:00"
+        day_end = target_date.isoformat() + "T23:59:59"
+        key_condition = (
+            Key("doctorId").eq(str(doctor_id))
+            & Key("slotTime").between(day_start, day_end)
         )
         logger.info(
-            "STEP 4D: Scanning existing slots for targeted refresh doctor_id=%s date=%s",
+            "STEP 4D: Querying existing slots for targeted refresh doctor_id=%s date=%s",
             doctor_id, target_date.isoformat()
         )
-        page = slots_table.scan(FilterExpression=scan_filter)
+        page = slots_table.query(KeyConditionExpression=key_condition)
         existing_items = list(page.get("Items", []))
         while page.get("LastEvaluatedKey"):
-            page = slots_table.scan(
-                FilterExpression=scan_filter,
+            page = slots_table.query(
+                KeyConditionExpression=key_condition,
                 ExclusiveStartKey=page["LastEvaluatedKey"],
             )
             existing_items.extend(page.get("Items", []))
@@ -491,11 +522,18 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
             doctor_id, target_date.isoformat(), len(existing_items), len(generated_slot_ids)
         )
         for existing in existing_items:
-            if existing.get("slotId") in generated_slot_ids:
+            existing_key = (
+                str(existing.get("doctorId")),
+                str(existing.get("slotTime")),
+            )
+            if existing_key in generated_slot_keys:
                 continue
             try:
                 slots_table.update_item(
-                    Key={"slotId": existing["slotId"]},
+                    Key={
+                        "doctorId": str(existing["doctorId"]),
+                        "slotTime": str(existing["slotTime"]),
+                    },
                     UpdateExpression="SET #status = :inactive, #is_blackout = :false",
                     ConditionExpression=(
                         "attribute_not_exists(bookedCount) OR bookedCount = :zero"

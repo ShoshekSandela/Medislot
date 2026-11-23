@@ -1470,15 +1470,17 @@ def doctor_schedule(connection, doctor_id, query_params):
 
     try:
         table = dynamodb.Table(table_name)
-        filter_expression = (
-            Attr("doctorId").eq(str(doctor_id))
-            & Attr("slotTime").begins_with(target_date.isoformat())
+        day_start = target_date.isoformat() + "T00:00:00"
+        day_end = target_date.isoformat() + "T23:59:59"
+        key_condition = (
+            Key("doctorId").eq(str(doctor_id))
+            & Key("slotTime").between(day_start, day_end)
         )
-        result = table.scan(FilterExpression=filter_expression)
+        result = table.query(KeyConditionExpression=key_condition)
         slots = result.get("Items", [])
         while result.get("LastEvaluatedKey"):
-            result = table.scan(
-                FilterExpression=filter_expression,
+            result = table.query(
+                KeyConditionExpression=key_condition,
                 ExclusiveStartKey=result["LastEvaluatedKey"],
             )
             slots.extend(result.get("Items", []))
@@ -1601,7 +1603,7 @@ def get_public_doctor(connection, doctor_id):
 
 @log_execution
 def public_doctor_slots(connection, doctor_id, query_params):
-    """Return free, bookable slots using the doctor-time GSI."""
+    """Return free, bookable slots using the doctorId/slotTime table key."""
     query_params = query_params or {}
     today_ist = datetime.now(IST).date()
 
@@ -1635,7 +1637,7 @@ def public_doctor_slots(connection, doctor_id, query_params):
     end_exclusive = (end_date + timedelta(days=1)).isoformat() + "T00:00:00"
 
     logger.info(
-        "Public slot lookup: table=%s index=doctor-time-index doctor_id=%s "
+        "Public slot lookup: table=%s primary_key=doctorId/slotTime doctor_id=%s "
         "start=%s end_exclusive=%s",
         table_name, doctor_id, start_key, end_exclusive,
     )
@@ -1649,14 +1651,12 @@ def public_doctor_slots(connection, doctor_id, query_params):
     )
     items = []
     result = table.query(
-        IndexName="doctor-time-index",
         KeyConditionExpression=key_condition,
     )
     items.extend(result.get("Items", []))
 
     while result.get("LastEvaluatedKey"):
         result = table.query(
-            IndexName="doctor-time-index",
             KeyConditionExpression=key_condition,
             ExclusiveStartKey=result["LastEvaluatedKey"],
         )

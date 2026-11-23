@@ -1,0 +1,28 @@
+$kind: http-request
+description: ""
+url: https://079lc9pei0.execute-api.us-east-1.amazonaws.com/dev/auth/register
+method: POST
+headers:
+  Content-Type: application/json
+body:
+  type: json
+  content: "{\r
+
+    \  \"role\": \"patient\",\r
+
+    \  \"first_name\": \"Shoshek\",\r
+
+    \  \"last_name\": \"Sandela\",\r
+
+    \  \"email\": \"patient@example.com\",\r
+
+    \  \"password\": \"Patient@12345\",\r
+
+    \  \"phone\": \"9876543210\",\r
+
+    \  \"date_of_birth\": \"2003-05-15\",\r
+
+    \  \"gender\": \"male\"\r
+
+    }"
+order: 1000

@@ -145,9 +145,6 @@ Resources:
 
       AttributeDefinitions:
 
-        - AttributeName: slotId
-          AttributeType: S
-
         - AttributeName: doctorId
           AttributeType: S
 
@@ -156,23 +153,11 @@ Resources:
 
       KeySchema:
 
-        - AttributeName: slotId
+        - AttributeName: doctorId
           KeyType: HASH
 
-      GlobalSecondaryIndexes:
-
-        - IndexName: doctor-time-index
-
-          KeySchema:
-
-            - AttributeName: doctorId
-              KeyType: HASH
-
-            - AttributeName: slotTime
-              KeyType: RANGE
-
-          Projection:
-            ProjectionType: ALL
+        - AttributeName: slotTime
+          KeyType: RANGE
 
       SSESpecification:
         SSEEnabled: true
@@ -231,19 +216,40 @@ Resources:
 
       AttributeDefinitions:
 
+        - AttributeName: patientId
+          AttributeType: S
+
+        - AttributeName: waitlistSortKey
+          AttributeType: S
+
         - AttributeName: slotId
           AttributeType: S
 
-        - AttributeName: patientId
+        - AttributeName: joinedAt
           AttributeType: S
 
       KeySchema:
 
-        - AttributeName: slotId
+        - AttributeName: patientId
           KeyType: HASH
 
-        - AttributeName: patientId
+        - AttributeName: waitlistSortKey
           KeyType: RANGE
+
+      GlobalSecondaryIndexes:
+
+        - IndexName: slot-queue-index
+
+          KeySchema:
+
+            - AttributeName: slotId
+              KeyType: HASH
+
+            - AttributeName: joinedAt
+              KeyType: RANGE
+
+          Projection:
+            ProjectionType: ALL
 
       SSESpecification:
         SSEEnabled: true
