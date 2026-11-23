@@ -45,6 +45,19 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # Temporary diagnostic: prints OIDC claims only, never the bearer token.
+      - name: Inspect GitHub OIDC claims
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const token = await core.getIDToken('sts.amazonaws.com');
+            const payload = JSON.parse(
+              Buffer.from(token.split('.')[1], 'base64url').toString()
+            );
+            core.info(`Issuer: ${payload.iss}`);
+            core.info(`Audience: ${JSON.stringify(payload.aud)}`);
+            core.info(`Subject: ${payload.sub}`);
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
