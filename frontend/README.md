@@ -29,7 +29,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 Configure the live API. Replace the example URL with your deployed API Gateway URL; do not include a trailing slash:
 
 ```powershell
-$env:API_BASE_URL = "https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/dev"
+$env:API_BASE_URL = "https://YOUR_API_ID.execute-api.ap-southeast-2.amazonaws.com/dev"
 $env:SECRET_KEY = "replace-with-a-long-random-secret"
 $env:APP_ENV = "development"
 $env:SESSION_COOKIE_SECURE = "0"

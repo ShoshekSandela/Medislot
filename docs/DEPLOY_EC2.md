@@ -1,6 +1,6 @@
 # Deploy the MediSlot dashboard to EC2 (CloudFormation only)
 
-Region: us-east-1. Run these in AWS CloudShell or any terminal with the AWS CLI.
+Region: ap-southeast-2. Run these in AWS CloudShell or any terminal with the AWS CLI.
 
 1. Push the changed files so GitHub Actions redeploys the network, IAM and
    application stacks (network-stack now lets the EC2 reach the VPC endpoints).

@@ -8,7 +8,7 @@ from botocore.exceptions import ClientError
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-REGION = os.environ.get("AWS_REGION", "us-east-1")
+REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 JWT_SECRET_PARAMETER = os.environ.get(
     "JWT_SECRET_PARAMETER",
     "/medislot/dev/jwt/signing-secret",

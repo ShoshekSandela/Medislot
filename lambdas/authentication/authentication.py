@@ -15,7 +15,7 @@ import pymysql
 from botocore.exceptions import ClientError
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
-REGION = os.environ.get("AWS_REGION", "us-east-1")
+REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 DB_SECRET_ARN = os.environ["DB_SECRET_ARN"]
 DB_HOST = os.environ["DB_HOST"]
 DB_NAME = os.environ.get("DB_NAME", "medislot")
