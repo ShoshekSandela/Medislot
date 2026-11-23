@@ -42,6 +42,9 @@ Parameters:
   SlotMaterializerLambdaRoleArn:
     Type: String
 
+  AppointmentLambdaRoleArn:
+    Type: String
+
   SlotsTableName:
     Type: String
 
@@ -60,6 +63,9 @@ Parameters:
     Default: medislot
 
   AuthTokensTableName:
+    Type: String
+
+  IdempotencyTableName:
     Type: String
 
   JwtSecretParameter:
@@ -227,6 +233,44 @@ Resources:
         - Key: Project
           Value: MediSlot
 
+
+
+  # =========================================================
+  # APPOINTMENT LAMBDA - BOOKING, CANCELLATION AND REFUNDS
+  # =========================================================
+
+  AppointmentLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-appointment
+      Runtime: python3.12
+      Handler: lambdas.appointment.appointment.lambda_handler
+      Role: !Ref AppointmentLambdaRoleArn
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      MemorySize: 256
+      Timeout: 30
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnetAId
+          - !Ref PrivateSubnetBId
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_SECRET_ARN: !Ref DatabaseSecretArn
+          DB_HOST: !Ref DatabaseHost
+          DB_NAME: !Ref DatabaseName
+          SLOTS_TABLE_NAME: !Ref SlotsTableName
+          IDEMPOTENCY_TABLE_NAME: !Ref IdempotencyTableName
+          REFUND_TIERS_PARAMETER: !Sub /medislot/${Environment}/refund/tiers
+          MAX_ACTIVE_APPOINTMENTS_PER_PATIENT: '5'
+          BOOKING_MAX_RETRIES: '5'
+      Tags:
+        - Key: Project
+          Value: MediSlot
 
   # =========================================================
   # SLOT MATERIALIZER LAMBDA
@@ -497,6 +541,57 @@ Resources:
           - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
           - FunctionArn: !GetAtt PatientLambda.Arn
 
+
+  # =========================================================
+  # APPOINTMENT ROUTES
+  # POST/GET /appointments
+  # GET /appointments/{proxy+}
+  # =========================================================
+
+  AppointmentsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ParentId: !GetAtt MediSlotApi.RootResourceId
+      PathPart: appointments
+
+  AppointmentsRootMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref AppointmentsResource
+      HttpMethod: ANY
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref MediSlotApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt AppointmentLambda.Arn
+
+  AppointmentsProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ParentId: !Ref AppointmentsResource
+      PathPart: '{proxy+}'
+
+  AppointmentsProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref AppointmentsProxyResource
+      HttpMethod: ANY
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref MediSlotApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt AppointmentLambda.Arn
+
   # =========================================================
   # LAMBDA INVOCATION PERMISSIONS
   # =========================================================
@@ -528,6 +623,16 @@ Resources:
       SourceArn: !Sub
         arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/*/patients*
 
+
+  AppointmentApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AppointmentLambda
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/*/appointments*
+
   AuthorizerApiPermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -544,7 +649,7 @@ Resources:
   # NOTE: API Gateway only publishes new routes when a NEW deployment is created.
   # CloudFormation creates one only when this logical ID changes, so bump the
   # suffix (V3 -> V4 ...) whenever routes or methods are added or changed.
-  MediSlotApiDeploymentV4:
+  MediSlotApiDeploymentV5:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - AuthMethod
@@ -556,6 +661,8 @@ Resources:
       - PatientsPutMethod
       - PatientsDeleteMethod
       - PatientAppointmentsGetMethod
+      - AppointmentsRootMethod
+      - AppointmentsProxyMethod
     Properties:
       RestApiId: !Ref MediSlotApi
       Description: !Sub MediSlot ${Environment} API deployment
@@ -568,7 +675,7 @@ Resources:
       - ApiGatewayAccount
     Properties:
       RestApiId: !Ref MediSlotApi
-      DeploymentId: !Ref MediSlotApiDeploymentV4
+      DeploymentId: !Ref MediSlotApiDeploymentV5
       StageName: !Ref Environment
       AccessLogSetting:
         DestinationArn: !GetAtt ApiGatewayAccessLogGroup.Arn
@@ -606,3 +713,6 @@ Outputs:
   PatientLambdaArn:
     Description: Patient Lambda ARN
     Value: !GetAtt PatientLambda.Arn
+  AppointmentLambdaArn:
+    Description: Appointment Lambda ARN
+    Value: !GetAtt AppointmentLambda.Arn

@@ -269,6 +269,35 @@ Resources:
       SecurityGroupIds:
         - !Ref EndpointSecurityGroup
 
+
+  # 18. EventBridge interface endpoint: appointment Lambda publishes domain events
+  EventsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref MediSlotVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.events
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  # 19. CloudWatch Monitoring interface endpoint: appointment Lambda publishes custom metrics
+  MonitoringEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref MediSlotVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.monitoring
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
 Outputs:
   VpcId:
     Description: MediSlot VPC ID

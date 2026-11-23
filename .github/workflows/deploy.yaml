@@ -27,12 +27,44 @@ env:
 jobs:
 
   # ==========================================================
+  # JOB 0 - LAMBDA UNIT TESTS
+  # ==========================================================
+
+  test-lambdas:
+    name: Run Backend and Frontend Regression Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r frontend/requirements.txt boto3
+
+      - name: Check Python syntax
+        run: |
+          python -m compileall -q lambdas frontend tests scripts
+
+      - name: Run backend and existing frontend tests
+        env:
+          PYTHONPATH: frontend
+        run: |
+          python -m pytest tests/ frontend/tests/ -q
+
+  # ==========================================================
   # JOB 1 - NETWORK STACK
   # ==========================================================
 
   deploy-network:
     name: Deploy Network Stack
     runs-on: ubuntu-latest
+    needs: test-lambdas
 
     outputs:
       vpc_id: ${{ steps.outputs.outputs.vpc_id }}
@@ -118,6 +150,7 @@ jobs:
       database_secret_arn: ${{ steps.outputs.outputs.database_secret_arn }}
       auth_tokens_table: ${{ steps.outputs.outputs.auth_tokens_table }}
       slots_table: ${{ steps.outputs.outputs.slots_table }}
+      idempotency_table: ${{ steps.outputs.outputs.idempotency_table }}
 
     steps:
 
@@ -172,6 +205,7 @@ jobs:
           echo "database_secret_arn=$(output DatabaseSecretArn)" >> "$GITHUB_OUTPUT"
           echo "auth_tokens_table=$(output AuthTokensTableName)" >> "$GITHUB_OUTPUT"
           echo "slots_table=$(output SlotsTableName)" >> "$GITHUB_OUTPUT"
+          echo "idempotency_table=$(output IdempotencyTableName)" >> "$GITHUB_OUTPUT"
 
 
   # ==========================================================
@@ -189,6 +223,7 @@ jobs:
       doctor_lambda_role_arn: ${{ steps.outputs.outputs.doctor_lambda_role_arn }}
       patient_lambda_role_arn: ${{ steps.outputs.outputs.patient_lambda_role_arn }}
       slot_materializer_lambda_role_arn: ${{ steps.outputs.outputs.slot_materializer_lambda_role_arn }}
+      appointment_lambda_role_arn: ${{ steps.outputs.outputs.appointment_lambda_role_arn }}
 
     steps:
 
@@ -241,6 +276,7 @@ jobs:
           echo "doctor_lambda_role_arn=$(output DoctorLambdaRoleArn)" >> "$GITHUB_OUTPUT"
           echo "patient_lambda_role_arn=$(output PatientLambdaRoleArn)" >> "$GITHUB_OUTPUT"
           echo "slot_materializer_lambda_role_arn=$(output SlotMaterializerLambdaRoleArn)" >> "$GITHUB_OUTPUT"
+          echo "appointment_lambda_role_arn=$(output AppointmentLambdaRoleArn)" >> "$GITHUB_OUTPUT"
 
 
   # ==========================================================
@@ -347,7 +383,7 @@ jobs:
 
           # Every Lambda module must define lambda_handler. A truncated file would
           # otherwise deploy fine and fail at runtime with an opaque 5xx.
-          for module in authentication authorizer doctor patient slot_materializer; do
+          for module in authentication authorizer doctor patient slot_materializer appointment; do
             if ! grep -q "^def lambda_handler" "$PACKAGE_DIR/lambdas/$module/$module.py"; then
               echo "ERROR: lambdas/$module/$module.py does not define lambda_handler."
               exit 1
@@ -395,10 +431,12 @@ jobs:
               DoctorLambdaRoleArn="${{ needs.deploy-iam.outputs.doctor_lambda_role_arn }}" \
               PatientLambdaRoleArn="${{ needs.deploy-iam.outputs.patient_lambda_role_arn }}" \
               SlotMaterializerLambdaRoleArn="${{ needs.deploy-iam.outputs.slot_materializer_lambda_role_arn }}" \
+              AppointmentLambdaRoleArn="${{ needs.deploy-iam.outputs.appointment_lambda_role_arn }}" \
               DatabaseSecretArn="${{ needs.deploy-data.outputs.database_secret_arn }}" \
               DatabaseHost="${{ needs.deploy-data.outputs.database_endpoint }}" \
               DatabaseName=medislot \
               AuthTokensTableName="${{ needs.deploy-data.outputs.auth_tokens_table }}" \
+              IdempotencyTableName="${{ needs.deploy-data.outputs.idempotency_table }}" \
               SlotsTableName="${{ needs.deploy-data.outputs.slots_table }}" \
               ProfilePhotosBucketName="${{ needs.deploy-data.outputs.application_files_bucket }}" \
             --capabilities CAPABILITY_NAMED_IAM \
