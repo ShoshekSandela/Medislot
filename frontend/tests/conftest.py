@@ -21,10 +21,23 @@ def app(tmp_path, monkeypatch):
         path = urlparse(url).path
         body = kwargs.get("json") or {}
         if path.endswith("/auth/login") and method == "POST":
+            role = "patient" if body.get("email") == "patient@example.com" else "doctor"
             return FakeResponse(200, {
                 "accessToken": "test-access", "refreshToken": "test-refresh",
-                "expiresIn": 900, "profileId": 7, "role": "doctor"
+                "expiresIn": 900, "profileId": 17 if role == "patient" else 7, "role": role
             })
+        if path.endswith("/auth/register") and method == "POST":
+            return FakeResponse(201, {"message": "Patient registration successful", "profileId": 17, "role": "patient"})
+        if path.endswith("/patients") and method == "GET":
+            return FakeResponse(200, {"patient": {"patient_id": 17, "first_name": "Priya", "last_name": "Test", "email": "patient@example.com"}})
+        if path.endswith("/patients") and method == "PUT":
+            return FakeResponse(200, {"message": "Updated"})
+        if path.endswith("/doctors") and method == "GET":
+            return FakeResponse(200, {"doctors": [], "pagination": {"page": 1, "page_size": 10, "total": 0, "total_pages": 0}})
+        if path.endswith("/doctors/9") and method == "GET":
+            return FakeResponse(200, {"doctor_id": 9, "first_name": "Test", "hospitals": [], "specialisations": [], "consultation_types": []})
+        if path.endswith("/doctors/9/slots") and method == "GET":
+            return FakeResponse(200, {"doctor_id": 9, "slots": [], "total_slots": 0})
         if path.endswith("/auth/refresh"):
             return FakeResponse(200, {
                 "accessToken": "test-access-new", "refreshToken": "test-refresh",

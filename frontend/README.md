@@ -29,7 +29,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 Configure the live API. Replace the example URL with your deployed API Gateway URL; do not include a trailing slash:
 
 ```powershell
-$env:API_BASE_URL = "https://YOUR_API_ID.execute-api.us-east-1.amazonaws.com/dev"
+$env:API_BASE_URL = "https://YOUR_API_ID.execute-api.ap-southeast-2.amazonaws.com/dev"
 $env:SECRET_KEY = "replace-with-a-long-random-secret"
 $env:APP_ENV = "development"
 $env:SESSION_COOKIE_SECURE = "0"
@@ -102,7 +102,7 @@ Attach an EC2 instance role with permission to read only the specified deploymen
 ## API limitations
 
 - The API contract does not currently provide appointment listing, slot cancellation, or appointment outcome endpoints. Those controls remain disabled.
-- There is no hospital-list endpoint; hospital IDs are entered as numeric values and can be prefilled from existing availability or blackout records.
+- The public `GET /auth/hospitals` endpoint supplies active hospital names and branches to the doctor-registration dropdown. The selected option submits its numeric `hospital_id`.
 - There is no profile-photo read URL; the dashboard shows initials and an upload indicator rather than attempting to render a private S3 object key.
 - Consultation types are returned as a shared catalog, not a doctor-owned list.
 - Schedule has no range endpoint; week view makes seven daily schedule requests concurrently.

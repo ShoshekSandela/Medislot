@@ -1,39 +1,56 @@
+"""MediSlot Patient Lambda: authenticated patient profile operations.
+
+Supported routes:
+  GET    /patients             - retrieve the authenticated patient's profile
+  PUT    /patients             - update the authenticated patient's profile
+  GET    /patients/appointments - retrieve only the authenticated patient's bookings
+
+Patient deactivation uses a soft delete: the patient row is retained and
+patients.account_status is changed from ACTIVE to DEACTIVATED.
+"""
 
 import os
 import json
 import base64
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import boto3
 import pymysql
-from zoneinfo import ZoneInfo
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 secrets_client = boto3.client("secretsmanager")
+s3_client = boto3.client("s3")
+IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def connect_db():
-    secret_response = secrets_client.get_secret_value(
-        SecretId=os.environ["DB_SECRET_ARN"]
-    )
+    logger.info("STEP START: patient database connection")
+    try:
+        secret_response = secrets_client.get_secret_value(
+            SecretId=os.environ["DB_SECRET_ARN"]
+        )
+        secret = json.loads(secret_response["SecretString"])
 
-    secret = json.loads(secret_response["SecretString"])
-
-    return pymysql.connect(
-        host=os.environ["DB_HOST"],
-        user=secret.get("username") or secret.get("user"),
-        password=secret["password"],
-        database=os.environ.get("DB_NAME", "medislot"),
-        cursorclass=pymysql.cursors.DictCursor,
-        connect_timeout=5,
-        init_command="SET time_zone = '+05:30'",
-        read_timeout=10,
-        write_timeout=10,
-        autocommit=False
-    )
+        connection = pymysql.connect(
+            host=os.environ["DB_HOST"],
+            user=secret.get("username") or secret.get("user"),
+            password=secret["password"],
+            database=os.environ.get("DB_NAME", "medislot"),
+            cursorclass=pymysql.cursors.DictCursor,
+            connect_timeout=5,
+            init_command="SET time_zone = '+05:30'",
+            read_timeout=10,
+            write_timeout=10,
+            autocommit=False,
+        )
+        logger.info("STEP COMPLETE: patient database connection")
+        return connection
+    except Exception:
+        logger.exception("STEP FAILED: patient database connection")
+        raise
 
 
 def response(status, body):
@@ -41,9 +58,9 @@ def response(status, body):
         "statusCode": status,
         "headers": {
             "Content-Type": "application/json",
-            "Cache-Control": "no-store"
+            "Cache-Control": "no-store",
         },
-        "body": json.dumps(body, default=str)
+        "body": json.dumps(body, default=str),
     }
 
 
@@ -65,16 +82,18 @@ def parse_body(event):
 
 
 def get_auth_context(event):
-    authorizer = (
-        event.get("requestContext", {}).get("authorizer", {}) or {}
-    )
+    request_context = event.get("requestContext") or {}
+    authorizer = request_context.get("authorizer") or {}
 
-    # Supports REST API and HTTP API Lambda authorizer context.
-    if isinstance(authorizer.get("lambda"), dict):
-        authorizer = {
-            **authorizer,
-            **authorizer["lambda"]
-        }
+    # HTTP API Lambda authorizers may nest custom context under "lambda".
+    lambda_context = authorizer.get("lambda")
+    if isinstance(lambda_context, dict):
+        authorizer = {**authorizer, **lambda_context}
+
+    # REST API Cognito authorizers may put claims under "claims".
+    claims = authorizer.get("claims")
+    if isinstance(claims, dict):
+        authorizer = {**authorizer, **claims}
 
     return authorizer
 
@@ -86,68 +105,242 @@ def get_patient_identity(event):
         auth.get("profileId")
         or auth.get("principalId")
         or auth.get("sub")
+        or auth.get("patient_id")
     )
-
-    role = str(auth.get("role") or "").strip().lower()
+    role = str(auth.get("role") or auth.get("custom:role") or "").strip().lower()
 
     if not patient_id:
         return None, role
 
     try:
         patient_id = int(patient_id)
-
-        if patient_id <= 0:
-            return None, role
-
     except (TypeError, ValueError):
+        return None, role
+
+    if patient_id <= 0:
         return None, role
 
     return patient_id, role
 
 
+def validate_profile_updates(body):
+    allowed_fields = {
+        "first_name",
+        "last_name",
+        "phone",
+        "date_of_birth",
+        "gender",
+    }
+
+    unknown_fields = set(body) - allowed_fields
+    if unknown_fields:
+        raise ValueError(
+            "Unsupported fields: " + ", ".join(sorted(unknown_fields))
+        )
+
+    if not body:
+        raise ValueError("Provide at least one field to update")
+
+    updates = {}
+    for field, value in body.items():
+        if field in {"first_name", "last_name", "phone", "gender"}:
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"{field} must be a string")
+            if isinstance(value, str):
+                value = value.strip()
+        updates[field] = value
+
+    if "first_name" in updates:
+        first_name = updates["first_name"]
+        if not first_name:
+            raise ValueError("first_name cannot be empty")
+        if len(first_name) > 100:
+            raise ValueError("first_name is too long")
+
+    if "last_name" in updates:
+        last_name = updates["last_name"]
+        if last_name is not None and len(last_name) > 100:
+            raise ValueError("last_name is too long")
+
+    if "phone" in updates:
+        phone = updates["phone"]
+        if phone and len(phone) > 20:
+            raise ValueError("Phone number must be at most 20 characters")
+
+    if "gender" in updates:
+        valid_genders = {
+            None,
+            "",
+            "male",
+            "female",
+            "other",
+            "prefer_not_to_say",
+        }
+        if updates["gender"] not in valid_genders:
+            raise ValueError("Invalid gender")
+
+    if "date_of_birth" in updates:
+        dob = updates["date_of_birth"]
+        if dob:
+            if not isinstance(dob, str):
+                raise ValueError("date_of_birth must use YYYY-MM-DD format")
+            try:
+                parsed_dob = datetime.strptime(dob, "%Y-%m-%d").date()
+            except ValueError:
+                raise ValueError("date_of_birth must use YYYY-MM-DD format")
+
+            if parsed_dob > datetime.now(IST).date():
+                raise ValueError("Date of birth cannot be in the future")
+        else:
+            updates["date_of_birth"] = None
+
+    return updates
+
+
 def lambda_handler(event, context):
+    request_id = getattr(context, "aws_request_id", "unknown")
+    event = event or {}
+    request_context = event.get("requestContext") or {}
+    http_context = request_context.get("http") or {}
+    method = (event.get("httpMethod") or http_context.get("method") or "").upper()
+    path = event.get("path") or event.get("rawPath") or request_context.get("path") or ""
+
+    logger.info(
+        "PATIENT REQUEST START request_id=%s method=%s path=%s",
+        request_id,
+        method,
+        path,
+    )
 
     connection = None
 
     try:
+        logger.info("Patient step 1: resolving authenticated patient identity")
         patient_id, role = get_patient_identity(event)
+        logger.info(
+            "Patient identity resolved request_id=%s role=%s authenticated=%s",
+            request_id,
+            role,
+            bool(patient_id),
+        )
 
         if not patient_id:
-            return response(401, {
-                "message": "Unauthorized"
-            })
+            return response(401, {"message": "Unauthorized"})
 
         if role != "patient":
-            return response(403, {
-                "message": "Patient access required"
-            })
+            return response(403, {"message": "Patient access required"})
 
-        method = (
-            event.get("httpMethod")
-            or event.get("requestContext", {})
-                .get("http", {})
-                .get("method")
-            or ""
-        ).upper()
+        is_deactivate = method == "DELETE" and path.rstrip("/") == "/patients"
+        is_booking_history = (
+            method == "GET"
+            and path.rstrip("/") in {"/patients/appointments", "/patient/appointments"}
+        )
+        if method not in {"GET", "PUT", "DELETE"}:
+            return response(405, {"message": "Method not allowed"})
+        if method == "PUT" and path.rstrip("/") != "/patients":
+            return response(404, {"message": "Route not found"})
 
-        if method not in ["GET", "PUT", "DELETE"]:
-            return response(405, {
-                "message": "Method not allowed"
-            })
-
+        if method == "DELETE" and not is_deactivate:
+            return response(404, {"message": "Route not found"})
         body = parse_body(event) if method == "PUT" else {}
+        updates = validate_profile_updates(body) if method == "PUT" else None
 
+        logger.info("Patient step 2: connecting to database request_id=%s", request_id)
         connection = connect_db()
 
         with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT account_status FROM patients WHERE patient_id = %s LIMIT 1",
+                (patient_id,),
+            )
+            account_row = cursor.fetchone()
+            if not account_row:
+                return response(404, {"message": "Patient account not found"})
+            if str(account_row.get("account_status", "ACTIVE")).upper() != "ACTIVE":
+                return response(403, {"message": "This patient account is deactivated"})
 
-            # --------------------------------
-            # GET PATIENT PROFILE
-            # GET /patients
-            # --------------------------------
+            if is_deactivate:
+                logger.info("Patient step 3: soft-deactivating patient_id=%s", patient_id)
+                cursor.execute(
+                    """UPDATE patients
+                       SET account_status = 'DEACTIVATED', updated_at = CURRENT_TIMESTAMP
+                       WHERE patient_id = %s AND account_status = 'ACTIVE'""",
+                    (patient_id,),
+                )
+                connection.commit()
+                logger.info("PATIENT ACCOUNT SOFT-DEACTIVATED patient_id=%s request_id=%s", patient_id, request_id)
+                return response(200, {
+                    "message": "Patient account deactivated successfully",
+                    "patient_id": patient_id,
+                    "account_status": "DEACTIVATED",
+                })
+
+            if is_booking_history:
+                logger.info("Patient step 3: retrieving booking history patient_id=%s", patient_id)
+                cursor.execute(
+                    """
+                    SELECT
+                        a.appointment_id,
+                        a.slot_id,
+                        a.start_at_ist,
+                        a.end_at_ist,
+                        a.timezone,
+                        a.status,
+                        a.created_at,
+                        d.doctor_id,
+                        d.first_name AS doctor_first_name,
+                        d.last_name AS doctor_last_name,
+                        d.qualification,
+                        d.profile_photo_url,
+                        h.hospital_name,
+                        h.branch_name,
+                        h.city,
+                        ct.type_name AS consultation_type,
+                        ct.duration_minutes,
+                        ct.consultation_fee,
+                        (
+                            SELECT GROUP_CONCAT(DISTINCT s.specialisation_name
+                                ORDER BY s.specialisation_name SEPARATOR ', ')
+                            FROM doctor_specialisations ds
+                            JOIN specialisations s
+                              ON s.specialisation_id = ds.specialisation_id
+                             AND s.is_active = TRUE
+                            WHERE ds.doctor_id = d.doctor_id
+                        ) AS specialisations
+                    FROM appointments a
+                    JOIN doctors d ON d.doctor_id = a.doctor_id
+                    JOIN hospitals h ON h.hospital_id = a.hospital_id
+                    JOIN consultation_types ct
+                      ON ct.consultation_type_id = a.consultation_type_id
+                    WHERE a.patient_id = %s
+                    ORDER BY a.start_at_ist DESC, a.appointment_id DESC
+                    """,
+                    (patient_id,),
+                )
+                appointments = cursor.fetchall()
+                bucket = os.environ.get("PROFILE_PHOTOS_BUCKET")
+                for appointment in appointments:
+                    photo_key = appointment.get("profile_photo_url")
+                    appointment["profile_photo_display_url"] = None
+                    if bucket and photo_key:
+                        try:
+                            appointment["profile_photo_display_url"] = s3_client.generate_presigned_url(
+                                "get_object",
+                                Params={"Bucket": bucket, "Key": photo_key},
+                                ExpiresIn=3600,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Could not sign doctor photo for booking history appointment_id=%s",
+                                appointment.get("appointment_id"),
+                            )
+                return response(200, {
+                    "message": "Patient booking history retrieved successfully",
+                    "appointments": appointments,
+                })
 
             if method == "GET":
-
+                logger.info("Patient step 3: retrieving profile patient_id=%s", patient_id)
                 cursor.execute(
                     """
                     SELECT
@@ -161,230 +354,85 @@ def lambda_handler(event, context):
                         created_at,
                         updated_at
                     FROM patients
-                    WHERE patient_id = %s
+                    WHERE patient_id = %s AND account_status = 'ACTIVE'
                     LIMIT 1
                     """,
-                    (patient_id,)
+                    (patient_id,),
                 )
-
                 patient = cursor.fetchone()
 
                 if not patient:
-                    return response(404, {
-                        "message": "Patient profile not found"
-                    })
+                    return response(404, {"message": "Patient profile not found"})
 
+                logger.info(
+                    "PATIENT PROFILE RETRIEVED patient_id=%s request_id=%s",
+                    patient_id,
+                    request_id,
+                )
                 return response(200, {
                     "message": "Patient profile retrieved successfully",
-                    "patient": patient
+                    "patient": patient,
                 })
 
-            # --------------------------------
-            # UPDATE PATIENT PROFILE
-            # PUT /patients
-            # --------------------------------
-
             if method == "PUT":
-
-                allowed_fields = {
-                    "first_name",
-                    "last_name",
-                    "phone",
-                    "date_of_birth",
-                    "gender"
-                }
-
-                unknown_fields = (
-                    set(body.keys()) - allowed_fields
-                )
-
-                if unknown_fields:
-                    return response(400, {
-                        "message": "Unsupported fields",
-                        "fields": sorted(unknown_fields)
-                    })
-
-                if not body:
-                    return response(400, {
-                        "message": "Provide at least one field to update"
-                    })
-
-                updates = {}
-
-                for field in allowed_fields:
-
-                    if field not in body:
-                        continue
-
-                    value = body[field]
-
-                    if field in [
-                        "first_name",
-                        "last_name",
-                        "phone",
-                        "gender"
-                    ]:
-
-                        if value is not None and not isinstance(value, str):
-                            return response(400, {
-                                "message": f"{field} must be a string"
-                            })
-
-                        if isinstance(value, str):
-                            value = value.strip()
-
-                    updates[field] = value
-
-                # First name validation
-                if "first_name" in updates:
-                    if not updates["first_name"]:
-                        return response(400, {
-                            "message": "first_name cannot be empty"
-                        })
-
-                    if len(updates["first_name"]) > 100:
-                        return response(400, {
-                            "message": "first_name is too long"
-                        })
-
-                # Last name validation
-                if "last_name" in updates:
-                    if updates["last_name"] is not None and len(updates["last_name"]) > 100:
-                        return response(400, {
-                            "message": "last_name is too long"
-                        })
-
-                # Phone validation
-                if "phone" in updates:
-                    phone = updates["phone"]
-
-                    if phone and len(phone) > 20:
-                        return response(400, {
-                            "message": "Phone number must be at most 20 characters"
-                        })
-
-                # Gender validation
-                if "gender" in updates:
-                    gender = updates["gender"]
-
-                    valid_genders = [
-                        None,
-                        "",
-                        "male",
-                        "female",
-                        "other",
-                        "prefer_not_to_say"
-                    ]
-
-                    if gender not in valid_genders:
-                        return response(400, {
-                            "message": "Invalid gender"
-                        })
-
-                # Date of birth validation
-                if "date_of_birth" in updates:
-
-                    dob = updates["date_of_birth"]
-
-                    if dob:
-                        try:
-                            parsed_dob = datetime.strptime(
-                                dob,
-                                "%Y-%m-%d"
-                            ).date()
-
-                            if parsed_dob > datetime.now(ZoneInfo('Asia/Kolkata')).date():
-                                return response(400, {
-                                    "message": "Date of birth cannot be in the future"
-                                })
-
-                        except (ValueError, TypeError):
-                            return response(400, {
-                                "message": "date_of_birth must use YYYY-MM-DD format"
-                            })
-
-                columns = ", ".join(
-                    f"{field} = %s"
-                    for field in updates
-                )
-
-                values = list(updates.values())
-                values.append(patient_id)
+                logger.info("Patient step 3: updating profile patient_id=%s", patient_id)
+                set_clause = ", ".join(f"{field} = %s" for field in updates)
+                values = list(updates.values()) + [patient_id]
 
                 cursor.execute(
                     f"""
                     UPDATE patients
-                    SET {columns},
-                        updated_at = CURRENT_TIMESTAMP()
-                    WHERE patient_id = %s
+                    SET {set_clause}, updated_at = CURRENT_TIMESTAMP
+                    WHERE patient_id = %s AND account_status = 'ACTIVE'
                     """,
-                    values
+                    values,
                 )
 
+                # rowcount can be zero when the submitted values equal existing values.
+                cursor.execute(
+                    "SELECT patient_id FROM patients WHERE patient_id = %s AND account_status = 'ACTIVE' LIMIT 1",
+                    (patient_id,),
+                )
+                existing_patient = cursor.fetchone()
+
+                if not existing_patient:
+                    connection.rollback()
+                    return response(404, {"message": "Patient profile not found"})
+
                 connection.commit()
-
-                # Check whether patient exists if no values changed.
-                if cursor.rowcount == 0:
-
-                    cursor.execute(
-                        """
-                        SELECT patient_id
-                        FROM patients
-                        WHERE patient_id = %s
-                        """,
-                        (patient_id,)
-                    )
-
-                    if not cursor.fetchone():
-                        return response(404, {
-                            "message": "Patient profile not found"
-                        })
-
+                logger.info(
+                    "PATIENT PROFILE UPDATED patient_id=%s request_id=%s",
+                    patient_id,
+                    request_id,
+                )
                 return response(200, {
                     "message": "Patient profile updated successfully",
-                    "patient_id": patient_id
-                })
-
-            # --------------------------------
-            # DELETE PATIENT
-            # DELETE /patients
-            # --------------------------------
-
-            if method == "DELETE":
-
-                # Do not hard-delete patient records because
-                # appointments and medical history may reference them.
-
-                return response(409, {
-                    "message": "Patient deletion is disabled",
-                    "details": "Contact support for account deactivation"
+                    "patient_id": patient_id,
                 })
 
     except ValueError as exc:
-        return response(400, {
-            "message": str(exc)
-        })
+        if connection:
+            connection.rollback()
+        logger.warning(
+            "Patient request validation failed request_id=%s error=%s",
+            request_id,
+            exc,
+        )
+        return response(400, {"message": str(exc)})
 
     except pymysql.err.IntegrityError:
         if connection:
             connection.rollback()
-
-        logger.exception("Patient database integrity error")
-
-        return response(409, {
-            "message": "Database constraint violation"
-        })
+        logger.exception("Patient database integrity error request_id=%s", request_id)
+        return response(409, {"message": "Database constraint violation"})
 
     except Exception:
         if connection:
             connection.rollback()
-
-        logger.exception("Patient Lambda error")
-
-        return response(500, {
-            "message": "Internal server error"
-        })
+        logger.exception("Patient Lambda error request_id=%s", request_id)
+        return response(500, {"message": "Internal server error"})
 
     finally:
         if connection:
             connection.close()
+        logger.info("PATIENT REQUEST END request_id=%s", request_id)

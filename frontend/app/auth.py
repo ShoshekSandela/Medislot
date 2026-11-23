@@ -16,3 +16,13 @@ def doctor_required(fn):
     return wrapped
 
 def clear_session(): session.clear()
+
+
+def patient_required(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        if not session.get("accessToken") or session.get("role") != "patient":
+            flash("Please sign in with a patient account.", "warning")
+            return redirect(url_for("patient.login"))
+        return fn(*args, **kwargs)
+    return wrapped

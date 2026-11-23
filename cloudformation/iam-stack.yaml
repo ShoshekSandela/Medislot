@@ -105,6 +105,15 @@ Resources:
                   - secretsmanager:GetSecretValue
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:rds!*'
+        - PolicyName: ReadDoctorProfilePhotos
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub '${ProfilePhotosBucketArn}/doctors/*'
 
   # 3. Doctor Lambda execution role
   DoctorLambdaRole:
@@ -140,6 +149,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:PutObject
+                  # HeadObject and presigned GetObject require s3:GetObject.
                   - s3:GetObject
                 Resource:
                   - !Sub '${ProfilePhotosBucketArn}/doctors/*'
@@ -150,11 +160,19 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - dynamodb:Scan
-                  - dynamodb:PutItem
-                  - dynamodb:UpdateItem
+                  - dynamodb:Query
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots'
+
+        - PolicyName: InvokeSlotMaterializer
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-${Environment}-slot-materializer'
 
   # 4. Patient Lambda execution role
   PatientLambdaRole:
@@ -235,8 +253,10 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
+                  - dynamodb:GetItem
                   - dynamodb:PutItem
                   - dynamodb:UpdateItem
+                  - dynamodb:Query
                 Resource:
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
 

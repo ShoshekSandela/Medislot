@@ -15,7 +15,7 @@ import pymysql
 from botocore.exceptions import ClientError
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
-REGION = os.environ.get("AWS_REGION", "us-east-1")
+REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 DB_SECRET_ARN = os.environ["DB_SECRET_ARN"]
 DB_HOST = os.environ["DB_HOST"]
 DB_NAME = os.environ.get("DB_NAME", "medislot")
@@ -34,22 +34,39 @@ ssm = boto3.client("ssm", region_name=REGION)
 secrets_manager = boto3.client("secretsmanager", region_name=REGION)
 dynamodb = boto3.resource("dynamodb", region_name=REGION)
 token_table = dynamodb.Table(AUTH_TOKENS_TABLE)
-# Read secrets during Lambda initialization (cold start).
-JWT_SECRET = ssm.get_parameter(
-    Name=JWT_SECRET_PARAMETER, WithDecryption=True
-)["Parameter"]["Value"]
-DB_SECRET = json.loads(
-    secrets_manager.get_secret_value(SecretId=DB_SECRET_ARN)["SecretString"]
-)
+# Secrets are loaded lazily (first request of a warm container) instead of at
+# import time. A failure here used to crash the Lambda during init, which API
+# Gateway reports as an opaque 502 with nothing useful in the logs. Loading
+# inside the handler lets us log the real error and return a JSON 500.
+JWT_SECRET = None
+DB_SECRET = None
+
+
+def ensure_secrets():
+    global JWT_SECRET, DB_SECRET
+    if JWT_SECRET is None:
+        JWT_SECRET = ssm.get_parameter(
+            Name=JWT_SECRET_PARAMETER, WithDecryption=True
+        )["Parameter"]["Value"]
+    if DB_SECRET is None:
+        DB_SECRET = json.loads(
+            secrets_manager.get_secret_value(SecretId=DB_SECRET_ARN)["SecretString"]
+        )
+
+
+CORRELATION_ID = ""
 
 
 def response(status, body):
+    headers = {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+    }
+    if CORRELATION_ID:
+        headers["X-Correlation-Id"] = CORRELATION_ID
     return {
         "statusCode": status,
-        "headers": {
-            "Content-Type": "application/json",
-            "Cache-Control": "no-store",
-        },
+        "headers": headers,
         "body": json.dumps(body, default=str),
     }
 
@@ -161,8 +178,13 @@ def hash_password(password):
 
 def verify_password(password, stored_hash):
     try:
-        return bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
-    except (ValueError, TypeError):
+        # Some MySQL drivers/column types hand back bytes instead of str.
+        if isinstance(stored_hash, (bytes, bytearray, memoryview)):
+            stored_bytes = bytes(stored_hash)
+        else:
+            stored_bytes = str(stored_hash).encode("utf-8")
+        return bcrypt.checkpw(password.encode("utf-8"), stored_bytes)
+    except (ValueError, TypeError, AttributeError):
         return False
 
 
@@ -427,7 +449,8 @@ def login(event):
                     """
                     SELECT patient_id AS profile_id,
                            email,
-                           password_hash
+                           password_hash,
+                           account_status
                     FROM patients
                     WHERE email = %s
                     LIMIT 1
@@ -468,9 +491,13 @@ def login(event):
             account = doctor
             role = "doctor"
 
-        # Verify the password.
+        # Verify the password before returning account-state information.
         if not verify_password(password, account["password_hash"]):
             return response(401, {"message": "Invalid email or password"})
+
+        # Deactivated patient accounts are retained in the database but cannot sign in.
+        if role == "patient" and str(account.get("account_status", "ACTIVE")).upper() != "ACTIVE":
+            return response(403, {"message": "This patient account has been deactivated"})
 
         # Doctors must be approved before login.
         if role == "doctor":
@@ -500,8 +527,10 @@ def login(event):
             }
         )
 
-    except Exception:
-        logger.exception("Login failed")
+    except Exception as exc:
+        logger.exception(
+            "Login failed correlation_id=%s error_type=%s", CORRELATION_ID, type(exc).__name__
+        )
         return response(500, {"message": "Internal server error"})
 
 def refresh_session(event):
@@ -550,7 +579,7 @@ def refresh_session(event):
             with conn.cursor() as cur:
                 if role == "patient":
                     cur.execute(
-                        "SELECT patient_id FROM patients WHERE patient_id = %s LIMIT 1",
+                        "SELECT patient_id, account_status FROM patients WHERE patient_id = %s LIMIT 1",
                         (int(profile_id),)
                     )
                 else:
@@ -569,9 +598,11 @@ def refresh_session(event):
         if not account:
             return response(401, {"message": "Account no longer exists"})
 
+        if role == "patient" and str(account.get("account_status", "ACTIVE")).upper() != "ACTIVE":
+            return response(403, {"message": "This patient account has been deactivated"})
+
         if role == "doctor" and str(account.get("profile_status", "")).upper() != "ACTIVE":
             return response(403, {"message": "Doctor profile is pending approval or inactive"})
-
         access_token, _, _ = new_access_token(int(profile_id), role)
 
         return response(200, {
@@ -693,9 +724,13 @@ def logout(event):
 
 def lambda_handler(event, context):
     """API Gateway entry point for MediSlot authentication."""
+    global CORRELATION_ID
     try:
         event = event or {}
         request_context = event.get("requestContext") or {}
+        _hdrs = {str(k).lower(): v for k, v in (event.get("headers") or {}).items()}
+        CORRELATION_ID = str(_hdrs.get("x-correlation-id") or "")[:64]
+        ensure_secrets()
 
         method = (
             event.get("httpMethod")
@@ -729,9 +764,10 @@ def lambda_handler(event, context):
 
         path = "/" + path.lstrip("/")
 
+        request_id = getattr(context, "aws_request_id", "unknown")
         logger.info(
-            "Authentication request: method=%s path=%s resource=%s",
-            method, path, event.get("resource")
+            "AUTH REQUEST START request_id=%s method=%s path=%s resource=%s",
+            request_id, method, path, event.get("resource")
         )
 
         if method == "OPTIONS":
@@ -749,6 +785,21 @@ def lambda_handler(event, context):
                 "body": ""
             }
 
+        if method == "GET" and path == "/auth/hospitals":
+            # Public read-only catalog used by the doctor registration dropdown.
+            with connect_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT hospital_id, hospital_name, branch_name, city
+                        FROM hospitals
+                        WHERE is_active = TRUE
+                        ORDER BY hospital_name, branch_name, city
+                        """
+                    )
+                    hospitals = cur.fetchall()
+            return response(200, hospitals)
+
         if method == "POST" and path == "/auth/register":
             return register(event)
 
@@ -764,6 +815,7 @@ def lambda_handler(event, context):
         if method == "POST" and path == "/auth/init-db":
             return initialize_database(event)
 
+        logger.warning("Authentication route not found request_id=%s method=%s path=%s", request_id, method, path)
         return response(404, {
             "message": "Route not found",
             "method": method,
@@ -771,7 +823,10 @@ def lambda_handler(event, context):
             "resource": event.get("resource")
         })
 
-    except Exception:
-        logger.exception("Authentication Lambda handler failed")
+    except Exception as exc:
+        logger.exception(
+            "Authentication Lambda handler failed request_id=%s correlation_id=%s error_type=%s",
+            getattr(context, "aws_request_id", "unknown"), CORRELATION_ID, type(exc).__name__,
+        )
         return response(500, {"message": "Internal server error"})
 
