@@ -431,6 +431,36 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
     raise ApiError(409, "Slot availability changed during cancellation. Please refresh and retry.")
 
 
+def appointment_slot_time(appointment_row):
+    """Return the DynamoDB slotTime key for a persisted appointment row.
+
+    The slotId stored in RDS encodes the slot's composite identity as
+    ``doctorId#hospitalId#consultationTypeId#slotTime`` (e.g.
+    ``42#7#3#2026-12-01T09:00:00+05:30``).  Extracting the last segment gives
+    the exact string stored as the DynamoDB sort key, avoiding any risk of
+    timezone rounding when reconstructing it from start_at_ist.
+
+    For legacy rows whose slot_id is an opaque identifier that does not embed
+    the time, the function falls back to deriving the key from start_at_ist
+    (the MySQL DATETIME column, which pymysql returns without tzinfo).
+    """
+    slot_id = str(appointment_row.get("slot_id") or "")
+    if "#" in slot_id:
+        candidate = slot_id.rsplit("#", 1)[-1]
+        try:
+            # Validate the candidate is a parseable ISO-8601 datetime.
+            datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+            return candidate
+        except ValueError:
+            pass
+    # Fallback: reconstruct from the MySQL DATETIME (naive → attach IST).
+    start = appointment_row["start_at_ist"]
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=IST)
+    slot_time, _ = normalise_slot_time(start.isoformat(timespec="seconds"))
+    return slot_time
+
+
 def request_hash(patient_id, doctor_id, slot_time):
     value = f"{patient_id}|{doctor_id}|{slot_time}"
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
@@ -856,9 +886,7 @@ def cancel_appointment(appointment_id, caller_id, role):
     finally:
         connection.close()
 
-    slot_time, _ = normalise_slot_time(
-        appointment["start_at_ist"].replace(tzinfo=IST).isoformat(timespec="seconds")
-    )
+    slot_time = appointment_slot_time(appointment)
     try:
         released_now = release_cancelled_seat_once(
             appointment_id,
