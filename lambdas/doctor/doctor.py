@@ -1513,7 +1513,7 @@ def doctor_schedule(connection, doctor_id, query_params):
                 JOIN patients p ON p.patient_id = a.patient_id
                 WHERE a.doctor_id = %s
                   AND DATE(a.start_at_ist) = %s
-                  AND a.status = 'BOOKED'
+                  AND a.status = 'CONFIRMED'
                 ORDER BY a.start_at_ist
                 """,
                 (int(doctor_id), target_date),

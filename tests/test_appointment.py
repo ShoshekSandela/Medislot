@@ -81,42 +81,37 @@ def test_capacity_three_allows_exactly_three_of_twenty(monkeypatch, quiet_aws):
     def attempt(_):
         try:
             appointment.reserve_slot(42, table.item["slotTime"])
-            return "BOOKED"
+            return "CONFIRMED"
         except appointment.ApiError as error:
             return error.status_code
 
     with ThreadPoolExecutor(max_workers=20) as pool:
         results = list(pool.map(attempt, range(20)))
 
-    assert results.count("BOOKED") == 3
+    assert results.count("CONFIRMED") == 3
     assert results.count(409) == 17
     assert table.item["bookedCount"] == 3
     assert table.item["bookedCount"] <= table.item["capacity"]
 
 
-def test_refund_tier_cutoff_is_inclusive():
+def test_refund_tier_boundaries_match_frozen_rules():
     tiers = [
-        {"name": "FULL", "minimum_hours_before": Decimal("48"), "refund_percentage": Decimal("100")},
-        {"name": "PARTIAL", "minimum_hours_before": Decimal("24"), "refund_percentage": Decimal("50")},
-        {"name": "NONE", "minimum_hours_before": Decimal("0"), "refund_percentage": Decimal("0")},
+        {"name": "FULL", "minimum_hours_before": Decimal("48"),
+         "strictly_greater_than": True, "refund_percentage": Decimal("100")},
+        {"name": "75_PERCENT", "minimum_hours_before": Decimal("24"),
+         "refund_percentage": Decimal("75")},
+        {"name": "50_PERCENT", "minimum_hours_before": Decimal("6"),
+         "refund_percentage": Decimal("50")},
+        {"name": "NONE", "minimum_hours_before": Decimal("0"),
+         "refund_percentage": Decimal("0")},
     ]
     now = datetime(2026, 12, 1, 9, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
 
-    exact_48 = appointment.calculate_refund_tier(now + timedelta(hours=48), now, tiers)
-    just_under_48 = appointment.calculate_refund_tier(
-        now + timedelta(hours=48) - timedelta(seconds=1), now, tiers
-    )
-    exact_24 = appointment.calculate_refund_tier(now + timedelta(hours=24), now, tiers)
-    just_under_24 = appointment.calculate_refund_tier(
-        now + timedelta(hours=24) - timedelta(seconds=1), now, tiers
-    )
-    exact_0 = appointment.calculate_refund_tier(now, now, tiers)
-
-    assert exact_48["name"] == "FULL"
-    assert just_under_48["name"] == "PARTIAL"
-    assert exact_24["name"] == "PARTIAL"
-    assert just_under_24["name"] == "NONE"
-    assert exact_0["name"] == "NONE"
+    assert appointment.calculate_refund_tier(now + timedelta(hours=48, seconds=1), now, tiers)["refund_percentage"] == 100
+    assert appointment.calculate_refund_tier(now + timedelta(hours=48), now, tiers)["refund_percentage"] == 75
+    assert appointment.calculate_refund_tier(now + timedelta(hours=24), now, tiers)["refund_percentage"] == 75
+    assert appointment.calculate_refund_tier(now + timedelta(hours=6), now, tiers)["refund_percentage"] == 50
+    assert appointment.calculate_refund_tier(now + timedelta(hours=6) - timedelta(seconds=1), now, tiers)["refund_percentage"] == 0
 
 
 class FakeIdempotencyTable:
@@ -156,7 +151,7 @@ def test_idempotency_replay_returns_the_original_appointment(monkeypatch):
         "patient_id": 10,
         "doctor_id": 42,
         "slot_id": "42#7#3#2026-12-01T09:00:00+05:30",
-        "status": "BOOKED",
+        "status": "CONFIRMED",
     }
     appointment.complete_idempotency(idem_key, original)
 

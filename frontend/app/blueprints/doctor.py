@@ -543,7 +543,7 @@ def dashboard():
 
             a for a in appts
 
-            if a.get("status") == "BOOKED"
+            if a.get("status") == "CONFIRMED"
 
             and (
 
@@ -2088,7 +2088,7 @@ def schedule():
 
             elif booked >= capacity:
 
-                slot["status"] = "BOOKED"
+                slot["status"] = "CONFIRMED"
 
 
 

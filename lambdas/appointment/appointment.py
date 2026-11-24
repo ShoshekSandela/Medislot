@@ -34,7 +34,7 @@ REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 IST = timezone(timedelta(hours=5, minutes=30))
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "dev")
 MAX_RETRIES = int(os.environ.get("BOOKING_MAX_RETRIES", "5"))
-MAX_ACTIVE_APPOINTMENTS = int(os.environ.get("MAX_ACTIVE_APPOINTMENTS_PER_PATIENT", "5"))
+MAX_ACTIVE_APPOINTMENTS = int(os.environ.get("MAX_ACTIVE_APPOINTMENTS_PER_PATIENT", "3"))
 IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60
 
 secrets_client = boto3.client("secretsmanager", region_name=REGION)
@@ -495,17 +495,21 @@ def book_appointment(event, patient_id, request_id):
                     """SELECT COUNT(*) AS active_count
                        FROM appointments
                        WHERE patient_id = %s
-                         AND status = 'BOOKED'
+                         AND doctor_id = %s
+                         AND status = 'CONFIRMED'
                          AND start_at_ist >= NOW()""",
-                    (patient_id,),
+                    (patient_id, doctor_id),
                 )
                 active_count = int(cursor.fetchone()["active_count"])
                 if active_count >= MAX_ACTIVE_APPOINTMENTS:
-                    raise ApiError(409, "You have reached the maximum number of active appointments")
+                    raise ApiError(
+                        409,
+                        "You may hold at most 3 upcoming appointments with the same doctor",
+                    )
 
                 cursor.execute(
                     """SELECT appointment_id FROM appointments
-                       WHERE patient_id = %s AND slot_id = %s AND status = 'BOOKED'
+                       WHERE patient_id = %s AND slot_id = %s AND status = 'CONFIRMED'
                        LIMIT 1""",
                     (patient_id, slot_id),
                 )
@@ -521,7 +525,7 @@ def book_appointment(event, patient_id, request_id):
                         slot_id, start_at_ist, end_at_ist, timezone, status,
                         consultation_fee, idempotency_key)
                        VALUES (%s, %s, %s, %s, %s, %s, %s, 'Asia/Kolkata',
-                               'BOOKED', %s, %s)""",
+                               'CONFIRMED', %s, %s)""",
                     (
                         patient_id, doctor_id, int(slot["hospitalId"]),
                         int(slot["consultationTypeId"]), slot_id,
@@ -547,7 +551,7 @@ def book_appointment(event, patient_id, request_id):
             "start_at_ist": mysql_start.isoformat(),
             "end_at_ist": mysql_end.isoformat(),
             "consultation_fee": str(fee),
-            "status": "BOOKED",
+            "status": "CONFIRMED",
         }
         try:
             complete_idempotency(idem_key, appointment)
@@ -593,6 +597,7 @@ def get_refund_tiers():
         try:
             threshold = Decimal(str(tier["minimum_hours_before"]))
             percentage = Decimal(str(tier["refund_percentage"]))
+            exclusive = bool(tier.get("strictly_greater_than", False))
         except (KeyError, InvalidOperation, TypeError):
             raise RuntimeError("Each refund tier needs minimum_hours_before and refund_percentage")
         if not name or threshold < 0 or percentage < 0 or percentage > 100:
@@ -601,6 +606,7 @@ def get_refund_tiers():
             "name": name,
             "minimum_hours_before": threshold,
             "refund_percentage": percentage,
+            "strictly_greater_than": exclusive,
         })
     normalised.sort(key=lambda item: item["minimum_hours_before"], reverse=True)
     if normalised[-1]["minimum_hours_before"] != 0:
@@ -609,7 +615,7 @@ def get_refund_tiers():
 
 
 def calculate_refund_tier(appointment_start, now, tiers):
-    """The threshold is inclusive: the exact cutoff receives that tier's percentage."""
+    """Apply SSM refund thresholds, including explicitly exclusive boundaries."""
     if appointment_start.tzinfo is None:
         appointment_start = appointment_start.replace(tzinfo=IST)
     if now.tzinfo is None:
@@ -617,7 +623,12 @@ def calculate_refund_tier(appointment_start, now, tiers):
     seconds_before = Decimal(str((appointment_start - now).total_seconds()))
     hours_before = seconds_before / Decimal("3600")
     for tier in tiers:
-        if hours_before >= tier["minimum_hours_before"]:
+        threshold = tier["minimum_hours_before"]
+        if (
+            hours_before > threshold
+            if tier.get("strictly_greater_than")
+            else hours_before >= threshold
+        ):
             return tier
     return tiers[-1]
 
@@ -641,7 +652,7 @@ def cancel_appointment(appointment_id, caller_id, role):
             if role not in {"patient", "doctor"}:
                 raise ApiError(403, "Only the patient or treating doctor can cancel this appointment")
 
-            if appointment["status"] == "CANCELLED":
+            if appointment["status"] in {"CANCELLED_BY_PATIENT", "CANCELLED_BY_DOCTOR"}:
                 cursor.execute(
                     """SELECT cancellation_type, original_fee, refund_percentage,
                               refund_amount, refund_tier
@@ -662,7 +673,7 @@ def cancel_appointment(appointment_id, caller_id, role):
                 original_fee = Decimal(str(existing_refund["original_fee"]))
                 refund_amount = Decimal(str(existing_refund["refund_amount"]))
                 already_cancelled = True
-            elif appointment["status"] != "BOOKED":
+            elif appointment["status"] != "CONFIRMED":
                 raise ApiError(409, "Only booked appointments can be cancelled")
             else:
                 now = datetime.now(IST)
@@ -693,12 +704,17 @@ def cancel_appointment(appointment_id, caller_id, role):
                         str(refund_percentage), str(refund_amount), tier["name"],
                     ),
                 )
+                new_status = (
+                    "CANCELLED_BY_DOCTOR"
+                    if role == "doctor"
+                    else "CANCELLED_BY_PATIENT"
+                )
                 cursor.execute(
                     """UPDATE appointments
-                       SET status = 'CANCELLED', cancelled_at_ist = %s,
+                       SET status = %s, cancelled_at_ist = %s,
                            updated_at = CURRENT_TIMESTAMP
-                       WHERE appointment_id = %s AND status = 'BOOKED'""",
-                    (now.replace(tzinfo=None), appointment_id),
+                       WHERE appointment_id = %s AND status = 'CONFIRMED'""",
+                    (new_status, now.replace(tzinfo=None), appointment_id),
                 )
                 connection.commit()
     except Exception:
@@ -726,7 +742,11 @@ def cancel_appointment(appointment_id, caller_id, role):
 
     result = {
         "appointment_id": appointment_id,
-        "status": "CANCELLED",
+        "status": (
+            "CANCELLED_BY_DOCTOR"
+            if cancellation_type == "DOCTOR"
+            else "CANCELLED_BY_PATIENT"
+        ),
         "cancellation_type": cancellation_type,
         "refund_tier": tier["name"],
         "original_fee": str(original_fee),
@@ -792,7 +812,7 @@ def cancel_doctor_slot(event, doctor_id):
         with connection.cursor() as cursor:
             cursor.execute(
                 """SELECT * FROM appointments
-                   WHERE doctor_id = %s AND slot_id = %s AND status = 'BOOKED'
+                   WHERE doctor_id = %s AND slot_id = %s AND status = 'CONFIRMED'
                    FOR UPDATE""",
                 (doctor_id, slot_id),
             )
@@ -810,9 +830,9 @@ def cancel_doctor_slot(event, doctor_id):
                 )
                 cursor.execute(
                     """UPDATE appointments
-                       SET status = 'CANCELLED', cancelled_at_ist = %s,
+                       SET status = 'CANCELLED_BY_DOCTOR', cancelled_at_ist = %s,
                            updated_at = CURRENT_TIMESTAMP
-                       WHERE appointment_id = %s AND status = 'BOOKED'""",
+                       WHERE appointment_id = %s AND status = 'CONFIRMED'""",
                     (now, appointment["appointment_id"]),
                 )
                 newly_cancelled.append(int(appointment["appointment_id"]))
@@ -825,7 +845,7 @@ def cancel_doctor_slot(event, doctor_id):
                    JOIN refund_ledger r ON r.appointment_id = a.appointment_id
                    WHERE a.doctor_id = %s
                      AND a.slot_id = %s
-                     AND a.status = 'CANCELLED'
+                     AND a.status = 'CANCELLED_BY_DOCTOR'
                      AND r.cancellation_type = 'DOCTOR'""",
                 (doctor_id, slot_id),
             )
@@ -897,7 +917,7 @@ def cancel_doctor_slot(event, doctor_id):
             "doctor_id": doctor_id,
             "slot_id": slot_id,
             "slot_time": slot_time,
-            "status": "CANCELLED",
+            "status": "CANCELLED_BY_DOCTOR",
             "cancellation_type": "DOCTOR",
             "refund_percentage": "100",
             "refund_tier": "DOCTOR_FULL",

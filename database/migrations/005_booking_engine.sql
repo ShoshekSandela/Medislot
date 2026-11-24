@@ -63,3 +63,4 @@ SET @sql = IF(
 PREPARE migration_stmt FROM @sql;
 EXECUTE migration_stmt;
 DEALLOCATE PREPARE migration_stmt;
+

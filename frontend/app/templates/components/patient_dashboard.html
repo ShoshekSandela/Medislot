@@ -187,8 +187,8 @@
               <div class="patient-booking-info"><h3>Dr. {{ booking.doctor_first_name }} {{ booking.doctor_last_name or '' }}</h3><p>{{ booking.specialisations or 'Specialisation not listed' }}</p><p><strong>Hospital:</strong> {{ booking.hospital_name }}{% if booking.branch_name %} – {{ booking.branch_name }}{% endif %}, {{ booking.city }}</p><p><strong>Appointment:</strong> {{ booking.start_at_ist }} – {{ booking.end_at_ist }} IST</p><p><strong>Consultation:</strong> {{ booking.consultation_type }} · {{ booking.duration_minutes }} minutes</p><small>Booking reference: {{ booking.appointment_id }}{% if booking.slot_id %} · Slot: {{ booking.slot_id }}{% endif %}</small></div>
               {% set status = booking.status|upper %}
               <div class="patient-booking-actions">
-                <span class="status-pill {{ 'good' if status == 'BOOKED' else 'warning' if status == 'RESCHEDULED' else 'muted-pill' }}">{{ status|replace('_', ' ')|title }}</span>
-                {% if status == 'BOOKED' %}
+                <span class="status-pill {{ 'good' if status == 'CONFIRMED' else 'warning' if status == 'RESCHEDULED' else 'muted-pill' }}">{{ status|replace('_', ' ')|title }}</span>
+                {% if status == 'CONFIRMED' %}
                 <form method="post" action="{{ url_for('patient.cancel_booking', appointment_id=booking.appointment_id) }}" onsubmit="return confirm('Cancel this appointment? The applicable refund will be calculated using the cancellation policy.');">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button class="btn secondary" type="submit">Cancel appointment</button>

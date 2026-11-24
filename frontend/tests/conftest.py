@@ -50,7 +50,7 @@ def app(tmp_path, monkeypatch):
         if path.endswith("/appointments") and method == "POST":
             return FakeResponse(201, {
                 "message": "Appointment booked successfully",
-                "appointment": {"appointment_id": 123, "status": "BOOKED"}
+                "appointment": {"appointment_id": 123, "status": "CONFIRMED"}
             })
         if path.endswith("/auth/refresh"):
             return FakeResponse(200, {

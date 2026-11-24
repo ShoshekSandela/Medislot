@@ -266,7 +266,7 @@ Resources:
           SLOTS_TABLE_NAME: !Ref SlotsTableName
           IDEMPOTENCY_TABLE_NAME: !Ref IdempotencyTableName
           REFUND_TIERS_PARAMETER: !Sub /medislot/${Environment}/refund/tiers
-          MAX_ACTIVE_APPOINTMENTS_PER_PATIENT: '5'
+          MAX_ACTIVE_APPOINTMENTS_PER_PATIENT: '3'
           BOOKING_MAX_RETRIES: '5'
       Tags:
         - Key: Project
@@ -690,15 +690,16 @@ Resources:
 
 
   # Refund policy used by the Appointment Lambda.
-  # Patient cancellations: 100% at >=48h, 50% at >=24h, otherwise 0%.
-  # Doctor cancellations are handled separately as a 100% refund.
+  # Strictly more than 48h: 100%; 24-48h: 75%; 6-24h: 50%; under 6h: 0%.
+  # Exact 48h and 24h belong to the 75% tier; exact 6h belongs to 50%.
   RefundTiersParameter:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub /medislot/${Environment}/refund/tiers
       Type: String
       Description: MediSlot appointment cancellation refund tiers
-      Value: '{"tiers":[{"name":"FULL","minimum_hours_before":48,"refund_percentage":100},{"name":"PARTIAL","minimum_hours_before":24,"refund_percentage":50},{"name":"NONE","minimum_hours_before":0,"refund_percentage":0}]}'
+      Value: '{"tiers":[{"name":"MORE_THAN_48_HOURS","minimum_hours_before":48,"strictly_greater_than":true,"refund_percentage":100},{"name":"BETWEEN_24_AND_48_HOURS","minimum_hours_before":24,"refund_percentage":75},{"name":"BETWEEN_6_AND_24_HOURS","minimum_hours_before":6,"refund_percentage":50},{"name":"LESS_THAN_6_HOURS","minimum_hours_before":0,"refund_percentage":0}]}'
+
 
 Outputs:
 

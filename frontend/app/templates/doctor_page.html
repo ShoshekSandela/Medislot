@@ -209,9 +209,9 @@
             <td>{{ a.start_at_ist|string|replace('T',' ') }}<small>To {{ a.end_at_ist|string|replace('T',' ') }}</small></td>
             <td>{{ a.consultation_type or 'Consultation' }}</td>
             <td>₹{{ '%.2f'|format(a.consultation_fee|float) }}</td>
-            <td><span class="status-pill {{ 'good' if status == 'BOOKED' else 'muted-pill' }}">{{ status|replace('_',' ')|title }}</span></td>
+            <td><span class="status-pill {{ 'good' if status == 'CONFIRMED' else 'muted-pill' }}">{{ status|replace('_',' ')|title }}</span></td>
             <td>
-              {% if status == 'BOOKED' %}
+              {% if status == 'CONFIRMED' %}
                 <form method="post" action="{{ url_for('doctor.cancel_appointment', appointment_id=a.appointment_id) }}" onsubmit="return confirm('Cancel this appointment? The patient will receive the applicable refund according to MediSlot policy.');">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button class="btn danger" type="submit">Cancel appointment</button>
