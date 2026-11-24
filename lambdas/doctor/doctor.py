@@ -1736,7 +1736,13 @@ def public_doctor_slots(connection, doctor_id, query_params):
         # Older fully-booked records may retain a full-state status even after
         # cancellation releases a seat. Treat them as bookable when capacity is
         # available, but continue to exclude terminal/blocked states.
-        if slot_status not in {"AVAILABLE", "FULL", "FULLY_BOOKED", "BOOKED"}:
+        # Older records may use a descriptive booking status. The numeric
+        # bookedCount/capacity values are authoritative for remaining seats;
+        # only terminal and blocked statuses should hide the slot.
+        if slot_status not in {
+            "AVAILABLE", "OPEN", "FULL", "FULL_BOOKED",
+            "FULLY_BOOKED", "BOOKED", "PARTIALLY_BOOKED",
+        }:
             continue
         if item.get("isBlackout") is True or booked >= capacity:
             continue

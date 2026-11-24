@@ -262,3 +262,28 @@ def test_cancelled_seat_release_converts_legacy_map_counter_once(monkeypatch):
     )
     assert retried is False
     assert slots.item["bookedCount"] == 1
+
+
+def test_cancellation_uses_exact_slot_time_from_persisted_slot_id():
+    appointment_row = {
+        "appointment_id": 77,
+        # MySQL DATETIME may be returned without timezone information.
+        "start_at_ist": datetime(2026, 12, 1, 9, 0, 0),
+        "slot_id": "42#7#3#2026-12-01T09:00:00+05:30",
+    }
+
+    assert appointment.appointment_slot_time(appointment_row) == (
+        "2026-12-01T09:00:00+05:30"
+    )
+
+
+def test_cancellation_slot_time_falls_back_to_mysql_start_time():
+    appointment_row = {
+        "appointment_id": 77,
+        "start_at_ist": datetime(2026, 12, 1, 9, 0, 0),
+        "slot_id": "legacy-slot-id",
+    }
+
+    assert appointment.appointment_slot_time(appointment_row) == (
+        "2026-12-01T09:00:00+05:30"
+    )
