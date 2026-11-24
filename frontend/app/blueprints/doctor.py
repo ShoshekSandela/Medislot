@@ -2311,25 +2311,40 @@ def schedule():
 @bp.get("/appointments")
 @doctor_required
 def appointments():
-    """Show appointments belonging to the signed-in doctor."""
+    """List appointments for the signed-in doctor."""
     try:
         result = get("/appointments")
-        appointment_rows = (
-            result.get("appointments", [])
-            if isinstance(result, dict)
-            else result
-        )
-        if not isinstance(appointment_rows, list):
-            appointment_rows = []
+        rows = result.get("appointments", []) if isinstance(result, dict) else []
+        if not isinstance(rows, list):
+            rows = []
         load_error = None
     except APIError as exc:
-        appointment_rows = []
+        rows = []
         load_error = exc.message
         flash(exc.message, "error")
 
     return page(
         "Appointments",
         "appointments",
-        appointments=appointment_rows,
+        appointments=rows,
         appointments_error=load_error,
     )
+
+
+@bp.post("/appointments/<int:appointment_id>/cancel")
+@doctor_required
+def cancel_appointment(appointment_id):
+    """Cancel one appointment and display the backend-calculated refund."""
+    try:
+        result = post(f"/appointments/{appointment_id}/cancel", {})
+        cancellation = result.get("cancellation", {}) if isinstance(result, dict) else {}
+        refund_amount = cancellation.get("refund_amount", "0.00")
+        refund_percentage = cancellation.get("refund_percentage", "100")
+        flash(
+            f"Appointment cancelled. Refund recorded: ₹{refund_amount} "
+            f"({refund_percentage}% of the consultation fee).",
+            "success",
+        )
+    except APIError as exc:
+        flash(exc.message, "error")
+    return redirect(url_for("doctor.appointments"))

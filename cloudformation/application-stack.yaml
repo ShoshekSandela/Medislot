@@ -688,6 +688,18 @@ Resources:
           DataTraceEnabled: false
 
 
+
+  # Refund policy used by the Appointment Lambda.
+  # Patient cancellations: 100% at >=48h, 50% at >=24h, otherwise 0%.
+  # Doctor cancellations are handled separately as a 100% refund.
+  RefundTiersParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /medislot/${Environment}/refund/tiers
+      Type: String
+      Description: MediSlot appointment cancellation refund tiers
+      Value: '{"tiers":[{"name":"FULL","minimum_hours_before":48,"refund_percentage":100},{"name":"PARTIAL","minimum_hours_before":24,"refund_percentage":50},{"name":"NONE","minimum_hours_before":0,"refund_percentage":0}]}'
+
 Outputs:
 
   ApiId:

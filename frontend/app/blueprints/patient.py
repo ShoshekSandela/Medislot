@@ -252,6 +252,22 @@ def book_slot():
     return redirect(url_for("patient.doctor_detail", doctor_id=doctor_id, date=selected_date))
 
 
+@bp.post("/booking-history/<int:appointment_id>/cancel")
+@patient_required
+def cancel_booking(appointment_id):
+    try:
+        result = post(f"/appointments/{appointment_id}/cancel", {})
+        cancellation = result.get("cancellation", {}) if isinstance(result, dict) else {}
+        flash(
+            f"Appointment cancelled. Refund recorded: ₹{cancellation.get('refund_amount', '0.00')} "
+            f"({cancellation.get('refund_percentage', '0')}% of the consultation fee).",
+            "success",
+        )
+    except APIError as exc:
+        flash(exc.message, "error")
+    return redirect(url_for("patient.booking_history") + "#booking-history")
+
+
 @bp.get("/booking-history")
 @patient_required
 def booking_history():
@@ -264,6 +280,19 @@ def booking_history():
     except APIError as exc:
         flash(exc.message, "error")
         bookings = None
+    refund_by_appointment = {}
+    try:
+        refund_result = get("/appointments/refunds")
+        refund_rows = refund_result.get("refunds", []) if isinstance(refund_result, dict) else []
+        if isinstance(refund_rows, list):
+            refund_by_appointment = {
+                str(item.get("appointment_id")): item
+                for item in refund_rows
+                if isinstance(item, dict)
+            }
+    except APIError:
+        # Booking history remains available even if refund history cannot be loaded.
+        refund_by_appointment = {}
     try:
         directory = get("/doctors", params={"page": 1, "page_size": 100})
     except APIError:
@@ -272,6 +301,7 @@ def booking_history():
         "components/patient_dashboard.html", profile=profile,
         doctors=None, directory=directory, filters={},
         selected_doctor=None, availability=None, bookings=bookings,
+        refund_by_appointment=refund_by_appointment,
         active_page="booking-history", today=_today_ist().isoformat(),
     )
 

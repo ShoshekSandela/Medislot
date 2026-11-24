@@ -186,7 +186,19 @@
               <div class="patient-doctor-avatar">{% if booking.profile_photo_display_url %}<img class="patient-doctor-photo" src="{{ booking.profile_photo_display_url }}" alt="Dr. {{ booking.doctor_first_name }}" onerror="this.hidden=true;this.nextElementSibling.hidden=false">{% endif %}<div class="avatar large patient-photo-fallback" {% if booking.profile_photo_display_url %}hidden{% endif %}>{{ (booking.doctor_first_name or 'D')[0]|upper }}</div></div>
               <div class="patient-booking-info"><h3>Dr. {{ booking.doctor_first_name }} {{ booking.doctor_last_name or '' }}</h3><p>{{ booking.specialisations or 'Specialisation not listed' }}</p><p><strong>Hospital:</strong> {{ booking.hospital_name }}{% if booking.branch_name %} – {{ booking.branch_name }}{% endif %}, {{ booking.city }}</p><p><strong>Appointment:</strong> {{ booking.start_at_ist }} – {{ booking.end_at_ist }} IST</p><p><strong>Consultation:</strong> {{ booking.consultation_type }} · {{ booking.duration_minutes }} minutes</p><small>Booking reference: {{ booking.appointment_id }}{% if booking.slot_id %} · Slot: {{ booking.slot_id }}{% endif %}</small></div>
               {% set status = booking.status|upper %}
-              <span class="status-pill {{ 'good' if status == 'BOOKED' else 'warning' if status == 'RESCHEDULED' else 'muted-pill' }}">{{ status|replace('_', ' ')|title }}</span>
+              <div class="patient-booking-actions">
+                <span class="status-pill {{ 'good' if status == 'BOOKED' else 'warning' if status == 'RESCHEDULED' else 'muted-pill' }}">{{ status|replace('_', ' ')|title }}</span>
+                {% if status == 'BOOKED' %}
+                <form method="post" action="{{ url_for('patient.cancel_booking', appointment_id=booking.appointment_id) }}" onsubmit="return confirm('Cancel this appointment? The applicable refund will be calculated using the cancellation policy.');">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button class="btn secondary" type="submit">Cancel appointment</button>
+                </form>
+                {% endif %}
+                {% set refund = refund_by_appointment.get(booking.appointment_id|string) if refund_by_appointment else none %}
+                {% if refund %}
+                  <small>Refund: ₹{{ refund.refund_amount }} ({{ refund.refund_percentage }}%) · {{ refund.refund_tier }}</small>
+                {% endif %}
+              </div>
             </article>
             {% endfor %}
           </div>
@@ -256,3 +268,9 @@
 })();
 </script>
 {% endblock %}
+
+<style>
+.patient-booking-actions{display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:10px;min-width:150px}
+.patient-booking-actions form{margin:0}
+@media(max-width:760px){.patient-booking-actions{align-items:flex-start;width:100%}}
+</style>

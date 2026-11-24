@@ -710,17 +710,6 @@ def cancel_appointment(appointment_id, caller_id, role):
     slot_time, _ = normalise_slot_time(
         appointment["start_at_ist"].replace(tzinfo=IST).isoformat(timespec="seconds")
     )
-    if already_cancelled and cancellation_type == "DOCTOR":
-        return {
-            "appointment_id": appointment_id,
-            "status": "CANCELLED",
-            "cancellation_type": cancellation_type,
-            "refund_tier": tier["name"],
-            "original_fee": str(original_fee),
-            "refund_percentage": str(tier["refund_percentage"]),
-            "refund_amount": str(refund_amount),
-            "already_cancelled": True,
-        }
     try:
         released_now = release_cancelled_seat_once(
             appointment_id,
