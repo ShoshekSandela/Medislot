@@ -61,6 +61,27 @@ def response(status, data):
     }
 
 
+def booked_count_value(value):
+    """Convert numeric and legacy map/list bookedCount values to a seat count."""
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        raise ValueError("bookedCount must not be a boolean")
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    if isinstance(value, dict):
+        for key in ("count", "booked", "bookedCount", "booked_count", "total"):
+            if key in value:
+                return booked_count_value(value[key])
+        for key in ("appointments", "bookings", "appointmentIds", "bookingIds"):
+            if key in value:
+                return booked_count_value(value[key])
+        return len(value)
+    if isinstance(value, (list, tuple, set)):
+        return len(value)
+    return max(0, int(value))
+
+
 @log_execution
 def get_db_connection():
 
@@ -1522,6 +1543,8 @@ def doctor_schedule(connection, doctor_id, query_params):
             if str(item.get("status", "")).upper() != "INACTIVE"
         ]
         slots.sort(key=lambda item: item.get("slotTime", ""))
+        for item in slots:
+            item["bookedCount"] = booked_count_value(item.get("bookedCount", 0))
 
         # RDS is the system of record for booked appointments and patient details.
         with connection.cursor() as cursor:
@@ -1701,7 +1724,7 @@ def public_doctor_slots(connection, doctor_id, query_params):
     for item in items:
         try:
             capacity = int(item.get("capacity", 1))
-            booked = int(item.get("bookedCount", 0))
+            booked = booked_count_value(item.get("bookedCount", 0))
         except (TypeError, ValueError):
             logger.warning(
                 "Skipping malformed slot counters doctor_id=%s slot_id=%s",

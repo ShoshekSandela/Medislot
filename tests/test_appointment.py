@@ -172,3 +172,88 @@ def test_request_hash_is_stable_and_scoped_to_patient():
 
     assert first == same
     assert first != other_patient
+
+
+
+def test_booked_count_value_supports_legacy_map_and_nested_count():
+    assert appointment.booked_count_value({"appointment-1": True, "appointment-2": True}) == 2
+    assert appointment.booked_count_value({"count": 3}) == 3
+    assert appointment.booked_count_value({"appointments": ["a", "b", "c"]}) == 3
+    assert appointment.booked_count_value(2) == 2
+
+
+
+def test_cancelled_seat_release_converts_legacy_map_counter_once(monkeypatch):
+    class SlotTable:
+        name = "slots"
+
+        def __init__(self):
+            self.item = {
+                "doctorId": "42",
+                "slotTime": "2026-12-01T09:00:00+05:30",
+                "slotId": "42#7#3#2026-12-01T09:00:00+05:30",
+                "bookedCount": {"appointment-1": True, "appointment-2": True},
+                "version": 2,
+            }
+
+        def get_item(self, Key, ConsistentRead=False):
+            return {"Item": dict(self.item)}
+
+    class IdemTable:
+        name = "idempotency"
+
+        def __init__(self):
+            self.items = {}
+
+        def get_item(self, Key, ConsistentRead=False):
+            item = self.items.get(Key["idemKey"])
+            return {"Item": dict(item)} if item else {}
+
+    class FakeClient:
+        def __init__(self, slots, idem):
+            self.slots = slots
+            self.idem = idem
+
+        def transact_write_items(self, TransactItems):
+            update = TransactItems[0]["Update"]
+            values = update["ExpressionAttributeValues"]
+            old_map = values[":old_count"]["M"]
+            current = self.slots.item["bookedCount"]
+            if current != {k: v["BOOL"] for k, v in old_map.items()}:
+                raise ClientError(
+                    {"Error": {"Code": "TransactionCanceledException", "Message": "condition"}},
+                    "TransactWriteItems",
+                )
+            self.slots.item["bookedCount"] = int(values[":new_count"]["N"])
+            self.slots.item["version"] += 1
+            put = TransactItems[1]["Put"]["Item"]
+            key = put["idemKey"]["S"]
+            if key in self.idem.items:
+                raise ClientError(
+                    {"Error": {"Code": "TransactionCanceledException", "Message": "exists"}},
+                    "TransactWriteItems",
+                )
+            self.idem.items[key] = {"idemKey": key, "status": "COMPLETE"}
+
+    slots = SlotTable()
+    idem = IdemTable()
+    client = FakeClient(slots, idem)
+    monkeypatch.setattr(appointment, "slots_table", slots)
+    monkeypatch.setattr(appointment, "idempotency_table", idem)
+    monkeypatch.setattr(
+        appointment,
+        "dynamodb",
+        type("DynamoResource", (), {"meta": type("Meta", (), {"client": client})()})(),
+    )
+
+    released = appointment.release_cancelled_seat_once(
+        77, 42, slots.item["slotTime"], slots.item["slotId"]
+    )
+    assert released is True
+    assert slots.item["bookedCount"] == 1
+
+    retried = appointment.release_cancelled_seat_once(
+        77, 42, slots.item["slotTime"], slots.item["slotId"]
+    )
+    assert retried is False
+    assert slots.item["bookedCount"] == 1

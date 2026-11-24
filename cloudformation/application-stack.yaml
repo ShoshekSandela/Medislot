@@ -267,6 +267,7 @@ Resources:
           IDEMPOTENCY_TABLE_NAME: !Ref IdempotencyTableName
           REFUND_TIERS_PARAMETER: !Sub /medislot/${Environment}/refund/tiers
           MAX_ACTIVE_APPOINTMENTS_PER_PATIENT: '5'
+          MAX_UPCOMING_APPOINTMENTS_PER_DOCTOR: '3'
           BOOKING_MAX_RETRIES: '5'
       Tags:
         - Key: Project

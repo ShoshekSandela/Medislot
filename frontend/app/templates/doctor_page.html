@@ -243,7 +243,7 @@
               <td>₹{{ '%.2f'|format((a.consultation_fee or a.fee or 0)|float) }}</td>
               <td><span class="status-pill {{ 'good' if status in ['UPCOMING','CONFIRMED','COMPLETED'] else 'warning' }}">{{ status|replace('_',' ')|title }}</span></td>
               <td>
-                {% if status == 'CONFIRMED' %}
+                {% if status in ['UPCOMING', 'CONFIRMED'] %}
                   <form method="post" action="{{ url_for('doctor.cancel_appointment', appointment_id=a.appointment_id) }}" onsubmit="return confirm('Cancel this appointment? The applicable doctor cancellation refund will be recorded.');">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <button class="btn danger-ghost" type="submit">Cancel appointment</button>

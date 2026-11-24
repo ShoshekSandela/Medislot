@@ -196,7 +196,7 @@
                 {% if status in ['BOOKED', 'CONFIRMED'] and booking_date >= today %}
                 <form method="post" action="{{ url_for('patient.cancel_booking', appointment_id=booking.appointment_id) }}" onsubmit="return confirm('Cancel this appointment? The applicable refund will be calculated using the cancellation policy.');">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                  <button class="btn secondary" type="submit">Cancel appointment</button>
+                  <button class="btn danger-ghost" type="submit">Cancel appointment</button>
                 </form>
                 {% endif %}
                 {% set refund = refund_by_appointment.get(booking.appointment_id|string) if refund_by_appointment else none %}
