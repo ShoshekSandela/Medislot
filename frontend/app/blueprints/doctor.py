@@ -2316,7 +2316,21 @@ def appointments():
     if view not in {"upcoming", "today", "cancelled", "refunds"}:
         view = "upcoming"
 
-    today = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
+    today = now_ist.date().isoformat()
+    now_local = now_ist.replace(tzinfo=None)
+
+    def parse_appointment_datetime(value):
+        if not value:
+            return None
+        try:
+            parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None)
+            return parsed
+        except (TypeError, ValueError):
+            return None
+
     try:
         result = get("/appointments")
         all_rows = result.get("appointments", []) if isinstance(result, dict) else []
@@ -2334,18 +2348,36 @@ def appointments():
             return "CONFIRMED"
         return status
 
-    def row_date(row):
-        value = row.get("start_at_ist") or row.get("startAtIst") or ""
-        return str(value).replace("T", " ")[:10]
+    def row_start(row):
+        return parse_appointment_datetime(row.get("start_at_ist") or row.get("startAtIst"))
+
+    def row_end(row):
+        return parse_appointment_datetime(row.get("end_at_ist") or row.get("endAtIst"))
 
     for row in all_rows:
-        row["_display_status"] = row_status(row)
-        row["_date"] = row_date(row)
+        status = row_status(row)
+        start_at = row_start(row)
+        end_at = row_end(row)
+        if status in {"BOOKED", "CONFIRMED"} and end_at and end_at <= now_local:
+            status = "COMPLETED"
+        row["_display_status"] = status
+        row["_start_at"] = start_at
+        row["_date"] = start_at.date().isoformat() if start_at else ""
 
     if view == "upcoming":
-        rows = [r for r in all_rows if r["_display_status"] == "CONFIRMED" and r["_date"] > today]
+        rows = [
+            r for r in all_rows
+            if r["_display_status"] in {"BOOKED", "CONFIRMED"}
+            and r["_start_at"] is not None and r["_start_at"] > now_local
+        ]
+        for row in rows:
+            row["_display_status"] = "UPCOMING"
     elif view == "today":
-        rows = [r for r in all_rows if r["_display_status"] == "CONFIRMED" and r["_date"] == today]
+        rows = [
+            r for r in all_rows
+            if r["_date"] == today
+            and r["_display_status"] in {"BOOKED", "CONFIRMED", "COMPLETED"}
+        ]
     elif view == "cancelled":
         rows = [r for r in all_rows if r["_display_status"].startswith("CANCELLED")]
     else:

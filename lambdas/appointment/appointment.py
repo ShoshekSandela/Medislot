@@ -512,7 +512,22 @@ def book_appointment(event, patient_id, request_id):
                 if cursor.fetchone():
                     raise ApiError(409, "You already have an active booking for this slot")
 
-                fee = Decimal(str(slot.get("consultationFee", "0.00"))).quantize(
+                # RDS is the source of truth for consultation pricing.
+                # DynamoDB slot fee is a cached value and may be stale.
+                cursor.execute(
+                    """SELECT consultation_fee
+                       FROM consultation_types
+                       WHERE consultation_type_id = %s
+                         AND doctor_id = %s
+                         AND is_active = TRUE
+                       FOR UPDATE""",
+                    (int(slot["consultationTypeId"]), doctor_id),
+                )
+                consultation_type = cursor.fetchone()
+                if not consultation_type:
+                    raise ApiError(409, "The selected consultation type is no longer available")
+
+                fee = Decimal(str(consultation_type["consultation_fee"] or "0.00")).quantize(
                     Decimal("0.01"), rounding=ROUND_HALF_UP
                 )
                 cursor.execute(
@@ -935,11 +950,22 @@ def list_appointments(caller_id, role):
     connection = connect_db()
     try:
         with connection.cursor() as cursor:
+            now_ist = datetime.now(IST).replace(tzinfo=None)
+            cursor.execute(
+                f"""UPDATE appointments a
+                    SET status = 'COMPLETED'
+                    WHERE {where}
+                      AND status IN ('BOOKED', 'CONFIRMED')
+                      AND end_at_ist <= %s""",
+                (value, now_ist),
+            )
+            connection.commit()
             cursor.execute(
                 f"""SELECT a.appointment_id, a.patient_id, a.doctor_id,
                            a.hospital_id, a.consultation_type_id, a.slot_id,
                            a.start_at_ist, a.end_at_ist, a.status,
-                           a.consultation_fee, a.created_at,
+                           COALESCE(NULLIF(a.consultation_fee, 0), ct.consultation_fee) AS consultation_fee,
+                           a.created_at,
                            (SELECT r.cancellation_type FROM refund_ledger r
                             WHERE r.appointment_id = a.appointment_id
                             ORDER BY r.refund_id DESC LIMIT 1) AS cancellation_type,

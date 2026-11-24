@@ -286,7 +286,7 @@ def lambda_handler(event, context):
                         a.end_at_ist,
                         a.timezone,
                         a.status,
-                        a.consultation_fee AS appointment_fee,
+                        COALESCE(NULLIF(a.consultation_fee, 0), ct.consultation_fee) AS appointment_fee,
                         a.created_at,
                         (SELECT r.cancellation_type FROM refund_ledger r
                          WHERE r.appointment_id = a.appointment_id
@@ -301,7 +301,7 @@ def lambda_handler(event, context):
                         h.city,
                         ct.type_name AS consultation_type,
                         ct.duration_minutes,
-                        ct.consultation_fee,
+                        COALESCE(NULLIF(a.consultation_fee, 0), ct.consultation_fee) AS consultation_fee,
                         (
                             SELECT GROUP_CONCAT(DISTINCT s.specialisation_name
                                 ORDER BY s.specialisation_name SEPARATOR ', ')
