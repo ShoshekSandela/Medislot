@@ -301,8 +301,7 @@ def create_slot(
                     "#hospital_id = :hospital_id, "
                     "#consultation_type_id = :consultation_type_id, "
                     "#consultation_fee = :fee, #capacity = :capacity, "
-                    "#slot_time = :slot_time, #end_time = :end_time, "
-                    "#timezone = :timezone"
+                    "#end_time = :end_time, #timezone = :timezone"
                 ),
                 ConditionExpression=(
                     "slotId = :slot_id AND "
@@ -315,7 +314,6 @@ def create_slot(
                     "#consultation_type_id": "consultationTypeId",
                     "#consultation_fee": "consultationFee",
                     "#capacity": "capacity",
-                    "#slot_time": "slotTime",
                     "#end_time": "endTime",
                     "#timezone": "timezone",
                 },
@@ -326,7 +324,6 @@ def create_slot(
                     ":consultation_type_id": int(availability["consultation_type_id"]),
                     ":fee": str(availability.get("consultation_fee", "0.00")),
                     ":capacity": int(availability.get("capacity", 1)),
-                    ":slot_time": start_ist.isoformat(timespec="seconds"),
                     ":end_time": end_ist.isoformat(timespec="seconds"),
                     ":timezone": "Asia/Kolkata",
                     ":zero": 0,
