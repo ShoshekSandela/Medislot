@@ -203,18 +203,19 @@
         <thead><tr><th>Patient</th><th>Date &amp; time (IST)</th><th>Consultation</th><th>Fee</th><th>Status</th><th>Action</th></tr></thead>
         <tbody>
         {% for a in appointments %}
-          {% set status = (a.status|string|upper) %}
+          {% set status = (a.status|string|upper) or 'STATUS UNAVAILABLE' %}
+          {% set is_active_booking = status in ['BOOKED', 'CONFIRMED'] %}
           <tr>
             <td><strong>{{ a.patient_first_name or 'Patient' }} {{ a.patient_last_name or '' }}</strong><small>{{ a.patient_phone or a.patient_email or 'Contact unavailable' }}</small></td>
             <td>{{ a.start_at_ist|string|replace('T',' ') }}<small>To {{ a.end_at_ist|string|replace('T',' ') }}</small></td>
             <td>{{ a.consultation_type or 'Consultation' }}</td>
-            <td>₹{{ '%.2f'|format(a.consultation_fee|float) }}</td>
-            <td><span class="status-pill {{ 'good' if status == 'CONFIRMED' else 'muted-pill' }}">{{ status|replace('_',' ')|title }}</span></td>
+            <td>₹{{ '%.2f'|format((a.consultation_fee or a.fee or 0)|float) }}</td>
+            <td><span class="status-pill {{ 'good' if is_active_booking else 'warning' if status.startswith('CANCELLED') else 'muted-pill' }}">{{ 'Confirmed' if is_active_booking else status|replace('_',' ')|title }}</span></td>
             <td>
-              {% if status == 'CONFIRMED' %}
+              {% if is_active_booking %}
                 <form method="post" action="{{ url_for('doctor.cancel_appointment', appointment_id=a.appointment_id) }}" onsubmit="return confirm('Cancel this appointment? The patient will receive the applicable refund according to MediSlot policy.');">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                  <button class="btn danger" type="submit">Cancel appointment</button>
+                  <button class="btn danger-ghost" type="submit">Cancel appointment</button>
                 </form>
               {% else %}<span class="muted">—</span>{% endif %}
             </td>
@@ -226,7 +227,7 @@
   {% else %}
     <div class="empty-state"><div class="empty-icon">♡</div><h2>No appointments yet</h2><p>Patient bookings for your consultation slots will appear here.</p></div>
   {% endif %}
-  <p class="muted doctor-refund-note">If you cancel an appointment, the backend records a 100% refund for the patient. Actual money transfer requires a connected payment gateway.</p>
+  <p class="muted doctor-refund-note">Doctor-initiated cancellation records a 100% refund for the patient. Refunds are recorded in the ledger; no payment gateway is connected.</p>
 </section>
 <style>
 .doctor-appointments-panel{width:100%;min-width:0}

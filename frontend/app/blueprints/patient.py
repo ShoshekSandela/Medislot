@@ -297,6 +297,23 @@ def booking_history():
         directory = get("/doctors", params={"page": 1, "page_size": 100})
     except APIError:
         directory = {"doctors": [], "pagination": {"total": 0, "total_pages": 1, "page": 1}}
+
+    # Appointment responses contain the doctor ID but not the browser-ready
+    # profile image URL. Reuse the doctor directory's short-lived S3 URLs.
+    directory_doctors = directory.get("doctors", []) if isinstance(directory, dict) else []
+    photo_by_doctor = {
+        str(item.get("doctor_id")): item.get("profile_photo_display_url")
+        for item in directory_doctors
+        if isinstance(item, dict) and item.get("doctor_id") and item.get("profile_photo_display_url")
+    }
+    if isinstance(bookings, list):
+        for booking in bookings:
+            if isinstance(booking, dict):
+                booking["profile_photo_display_url"] = (
+                    booking.get("profile_photo_display_url")
+                    or photo_by_doctor.get(str(booking.get("doctor_id")))
+                )
+
     return render_template(
         "components/patient_dashboard.html", profile=profile,
         doctors=None, directory=directory, filters={},
