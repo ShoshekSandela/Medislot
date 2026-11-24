@@ -151,6 +151,7 @@
               </div>
               {% if slot.freeSeats|int > 0 and slot.slotId and slot.slotTime %}
               <form method="post" action="{{ url_for('patient.book_slot') }}" class="patient-book-slot-form" onsubmit="return confirm('Book this consultation slot?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <input type="hidden" name="doctor_id" value="{{ selected_doctor.doctor_id }}">
                 <input type="hidden" name="slot_id" value="{{ slot.slotId }}">
                 <input type="hidden" name="slot_time" value="{{ slot.slotTime }}">
