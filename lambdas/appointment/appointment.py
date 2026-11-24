@@ -518,7 +518,7 @@ def book_appointment(event, patient_id, request_id):
                     """SELECT consultation_fee
                        FROM consultation_types
                        WHERE consultation_type_id = %s
-                         AND doctor_id = %s
+                         AND (doctor_id IS NULL OR doctor_id = %s)
                          AND is_active = TRUE
                        FOR UPDATE""",
                     (int(slot["consultationTypeId"]), doctor_id),

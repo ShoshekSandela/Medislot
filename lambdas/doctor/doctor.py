@@ -359,27 +359,20 @@ def get_profile(connection, doctor_id):
         if bucket:
 
             try:
-                s3_client.head_object(
-                    Bucket=bucket,
-                    Key=object_key,
+                # Generate a fresh browser-readable URL directly from the
+                # persisted S3 object key. A separate HeadObject call is not
+                # required to sign a GetObject request and can make the
+                # profile image disappear when HeadObject is denied.
+                profile["profile_photo_display_url"] = s3_client.generate_presigned_url(
+                    "get_object",
+                    Params={
+                        "Bucket": bucket,
+                        "Key": object_key,
+                    },
+                    ExpiresIn=3600,
                 )
-
-                profile["profile_photo_display_url"] = (
-                    s3_client.generate_presigned_url(
-                        "get_object",
-                        Params={
-                            "Bucket": bucket,
-                            "Key": object_key,
-                        },
-                        ExpiresIn=3600,
-                    )
-                )
-
             except Exception:
-                logger.exception(
-                    "Could not create/read doctor profile photo URL"
-                )
-
+                logger.exception("Could not create doctor profile photo URL")
                 profile["profile_photo_display_url"] = None
 
         else:
@@ -1352,15 +1345,14 @@ def blackouts(connection, doctor_id, method, data, item_id=None):
                 SELECT appointment_id
                 FROM appointments
                 WHERE doctor_id = %s
-                  AND hospital_id = %s
                   AND status IN ('BOOKED', 'CONFIRMED')
                   AND start_at_ist < %s
                   AND end_at_ist > %s
+                ORDER BY start_at_ist
                 LIMIT 1
                 """,
                 (
                     doctor_id,
-                    hospital_id,
                     data["end_at_ist"],
                     data["start_at_ist"],
                 ),

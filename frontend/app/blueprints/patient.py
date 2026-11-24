@@ -306,9 +306,9 @@ def booking_history():
     except APIError:
         directory = {"doctors": [], "pagination": {"total": 0, "total_pages": 1, "page": 1}}
 
-    # Prefer the appointment's signed URL, then the fresh directory URL.
-    # If neither is available, fetch that doctor's public profile once so
-    # booking history can use its newly generated S3 presigned photo URL.
+    # Use a fresh signed URL for each doctor represented in booking history.
+    # Cache the profile lookup so multiple appointments with the same doctor
+    # do not trigger repeated API calls.
     directory_doctors = directory.get("doctors", []) if isinstance(directory, dict) else []
     photo_by_doctor = {
         str(item.get("doctor_id")): item.get("profile_photo_display_url")
@@ -317,26 +317,36 @@ def booking_history():
         and item.get("doctor_id") is not None
         and item.get("profile_photo_display_url")
     }
+    doctor_profile_cache = {}
     if isinstance(bookings, list):
         for booking in bookings:
             if not isinstance(booking, dict):
                 continue
             doctor_id = booking.get("doctor_id") or booking.get("doctorId")
+            doctor_key = str(doctor_id) if doctor_id is not None else ""
             photo_url = (
                 booking.get("profile_photo_display_url")
-                or photo_by_doctor.get(str(doctor_id))
+                or photo_by_doctor.get(doctor_key)
             )
-            if not photo_url and doctor_id:
-                try:
-                    doctor_profile = get(f"/doctors/{int(doctor_id)}")
-                    if isinstance(doctor_profile, dict):
-                        doctor_profile = doctor_profile.get("doctor", doctor_profile)
-                    photo_url = (
-                        doctor_profile.get("profile_photo_display_url")
-                        if isinstance(doctor_profile, dict) else None
-                    )
-                except (APIError, TypeError, ValueError):
-                    photo_url = None
+
+            if not photo_url and doctor_key:
+                if doctor_key not in doctor_profile_cache:
+                    try:
+                        doctor_profile = get(f"/doctors/{int(doctor_key)}")
+                        if isinstance(doctor_profile, dict):
+                            doctor_profile = (
+                                doctor_profile.get("doctor")
+                                or doctor_profile.get("profile")
+                                or doctor_profile
+                            )
+                        doctor_profile_cache[doctor_key] = (
+                            doctor_profile.get("profile_photo_display_url")
+                            if isinstance(doctor_profile, dict) else None
+                        )
+                    except (APIError, TypeError, ValueError):
+                        doctor_profile_cache[doctor_key] = None
+                photo_url = doctor_profile_cache[doctor_key]
+
             booking["profile_photo_display_url"] = photo_url
 
     return render_template(
