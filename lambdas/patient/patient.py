@@ -286,7 +286,11 @@ def lambda_handler(event, context):
                         a.end_at_ist,
                         a.timezone,
                         a.status,
+                        a.consultation_fee AS appointment_fee,
                         a.created_at,
+                        (SELECT r.cancellation_type FROM refund_ledger r
+                         WHERE r.appointment_id = a.appointment_id
+                         ORDER BY r.refund_id DESC LIMIT 1) AS cancellation_type,
                         d.doctor_id,
                         d.first_name AS doctor_first_name,
                         d.last_name AS doctor_last_name,

@@ -2311,23 +2311,63 @@ def schedule():
 @bp.get("/appointments")
 @doctor_required
 def appointments():
-    """List appointments for the signed-in doctor."""
+    """Show the doctor's appointments grouped into Upcoming, Today, Cancelled and Refunds."""
+    view = (request.args.get("view") or "upcoming").strip().lower()
+    if view not in {"upcoming", "today", "cancelled", "refunds"}:
+        view = "upcoming"
+
+    today = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
     try:
         result = get("/appointments")
-        rows = result.get("appointments", []) if isinstance(result, dict) else []
-        if not isinstance(rows, list):
-            rows = []
+        all_rows = result.get("appointments", []) if isinstance(result, dict) else []
+        if not isinstance(all_rows, list):
+            all_rows = []
         load_error = None
     except APIError as exc:
-        rows = []
+        all_rows = []
         load_error = exc.message
         flash(exc.message, "error")
 
+    def row_status(row):
+        status = str(row.get("status") or "").upper()
+        if status == "BOOKED":
+            return "CONFIRMED"
+        return status
+
+    def row_date(row):
+        value = row.get("start_at_ist") or row.get("startAtIst") or ""
+        return str(value).replace("T", " ")[:10]
+
+    for row in all_rows:
+        row["_display_status"] = row_status(row)
+        row["_date"] = row_date(row)
+
+    if view == "upcoming":
+        rows = [r for r in all_rows if r["_display_status"] == "CONFIRMED" and r["_date"] > today]
+    elif view == "today":
+        rows = [r for r in all_rows if r["_display_status"] == "CONFIRMED" and r["_date"] == today]
+    elif view == "cancelled":
+        rows = [r for r in all_rows if r["_display_status"].startswith("CANCELLED")]
+    else:
+        rows = []
+
+    refund_rows = []
+    refunds_error = None
+    if view == "refunds":
+        try:
+            refund_result = get("/appointments/refunds")
+            refund_rows = refund_result.get("refunds", []) if isinstance(refund_result, dict) else []
+            if not isinstance(refund_rows, list):
+                refund_rows = []
+        except APIError as exc:
+            refunds_error = exc.message
+            flash(exc.message, "error")
+
     return page(
-        "Appointments",
-        "appointments",
-        appointments=rows,
-        appointments_error=load_error,
+        "Appointments", "appointments",
+        appointments=rows, appointments_error=load_error,
+        appointment_view=view, appointment_today=today,
+        refund_rows=refund_rows, refunds_error=refunds_error,
     )
 
 

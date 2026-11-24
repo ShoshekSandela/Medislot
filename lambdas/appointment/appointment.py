@@ -940,6 +940,9 @@ def list_appointments(caller_id, role):
                            a.hospital_id, a.consultation_type_id, a.slot_id,
                            a.start_at_ist, a.end_at_ist, a.status,
                            a.consultation_fee, a.created_at,
+                           (SELECT r.cancellation_type FROM refund_ledger r
+                            WHERE r.appointment_id = a.appointment_id
+                            ORDER BY r.refund_id DESC LIMIT 1) AS cancellation_type,
                            d.first_name AS doctor_first_name,
                            d.last_name AS doctor_last_name,
                            p.first_name AS patient_first_name,
@@ -1002,19 +1005,34 @@ def appointment_detail(appointment_id, caller_id, role):
         connection.close()
 
 
-def patient_refunds(patient_id):
+def list_refunds(caller_id, role):
+    if role == "patient":
+        where, value = "a.patient_id = %s", caller_id
+    elif role == "doctor":
+        where, value = "a.doctor_id = %s", caller_id
+    else:
+        raise ApiError(403, "Only patients and doctors can view refund records")
+
     connection = connect_db()
     try:
         with connection.cursor() as cursor:
             cursor.execute(
-                """SELECT r.refund_id, r.appointment_id, r.cancellation_type,
-                          r.original_fee, r.refund_percentage, r.refund_amount, r.refund_tier,
-                          r.created_at, a.start_at_ist, a.slot_id
-                   FROM refund_ledger r
-                   JOIN appointments a ON a.appointment_id = r.appointment_id
-                   WHERE a.patient_id = %s
-                   ORDER BY r.created_at DESC, r.refund_id DESC""",
-                (patient_id,),
+                f"""SELECT r.refund_id, r.appointment_id, r.cancellation_type,
+                           r.original_fee, r.refund_percentage, r.refund_amount, r.refund_tier,
+                           r.created_at, a.start_at_ist, a.end_at_ist, a.slot_id,
+                           a.consultation_fee, a.status,
+                           p.first_name AS patient_first_name,
+                           p.last_name AS patient_last_name,
+                           p.email AS patient_email,
+                           d.first_name AS doctor_first_name,
+                           d.last_name AS doctor_last_name
+                    FROM refund_ledger r
+                    JOIN appointments a ON a.appointment_id = r.appointment_id
+                    JOIN patients p ON p.patient_id = a.patient_id
+                    JOIN doctors d ON d.doctor_id = a.doctor_id
+                    WHERE {where}
+                    ORDER BY r.created_at DESC, r.refund_id DESC""",
+                (value,),
             )
             return cursor.fetchall()
     finally:
@@ -1048,11 +1066,9 @@ def lambda_handler(event, context):
             })
 
         if method == "GET" and path == "/appointments/refunds":
-            if role != "patient":
-                raise ApiError(403, "Only patients can view their refund ledger")
             return response(200, {
                 "message": "Refund history retrieved successfully",
-                "refunds": patient_refunds(caller_id),
+                "refunds": list_refunds(caller_id, role),
             })
 
         if method == "POST" and path == "/appointments/doctor-cancel-slot":

@@ -192,60 +192,88 @@
 {% elif active=='appointments' %}
 <section class="panel doctor-appointments-panel">
   <div class="doctor-appointments-heading">
-    <div><h2>Appointments</h2><p class="muted">Bookings made by patients with you</p></div>
-    <a class="btn secondary" href="{{ url_for('doctor.appointments') }}">↻ Refresh</a>
+    <div><h2>Appointments</h2><p class="muted">Manage your patient bookings and refunds</p></div>
+    <a class="btn secondary" href="{{ url_for('doctor.appointments', view=appointment_view) }}">↻ Refresh</a>
   </div>
-  {% if appointments_error %}
-    <div class="error-card">{{ appointments_error }}</div>
-  {% elif appointments %}
-    <div class="doctor-appointments-table-wrap">
-      <table class="doctor-appointments-table">
-        <thead><tr><th>Patient</th><th>Date &amp; time (IST)</th><th>Consultation</th><th>Fee</th><th>Status</th><th>Action</th></tr></thead>
-        <tbody>
-        {% for a in appointments %}
-          {% set status = (a.status|string|upper) or 'STATUS UNAVAILABLE' %}
-          {% set is_active_booking = status in ['BOOKED', 'CONFIRMED'] %}
-          <tr>
-            <td><strong>{{ a.patient_first_name or 'Patient' }} {{ a.patient_last_name or '' }}</strong><small>{{ a.patient_phone or a.patient_email or 'Contact unavailable' }}</small></td>
-            <td>{{ a.start_at_ist|string|replace('T',' ') }}<small>To {{ a.end_at_ist|string|replace('T',' ') }}</small></td>
-            <td>{{ a.consultation_type or 'Consultation' }}</td>
-            <td>₹{{ '%.2f'|format((a.consultation_fee or a.fee or 0)|float) }}</td>
-            <td><span class="status-pill {{ 'good' if is_active_booking else 'warning' if status.startswith('CANCELLED') else 'muted-pill' }}">{{ 'Confirmed' if is_active_booking else status|replace('_',' ')|title }}</span></td>
-            <td>
-              {% if is_active_booking %}
-                <form method="post" action="{{ url_for('doctor.cancel_appointment', appointment_id=a.appointment_id) }}" onsubmit="return confirm('Cancel this appointment? The patient will receive the applicable refund according to MediSlot policy.');">
-                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                  <button class="btn danger-ghost" type="submit">Cancel appointment</button>
-                </form>
-              {% else %}<span class="muted">—</span>{% endif %}
-            </td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
+  <nav class="appointment-filter-nav" aria-label="Appointment views">
+    <a class="{{ 'active' if appointment_view == 'upcoming' else '' }}" href="{{ url_for('doctor.appointments', view='upcoming') }}">Upcoming</a>
+    <a class="{{ 'active' if appointment_view == 'today' else '' }}" href="{{ url_for('doctor.appointments', view='today') }}">Today</a>
+    <a class="{{ 'active' if appointment_view == 'cancelled' else '' }}" href="{{ url_for('doctor.appointments', view='cancelled') }}">Cancelled</a>
+    <a class="{{ 'active' if appointment_view == 'refunds' else '' }}" href="{{ url_for('doctor.appointments', view='refunds') }}">Refunds</a>
+  </nav>
+
+  {% if appointment_view == 'refunds' %}
+    <h3>Refund ledger</h3>
+    <p class="muted">Refund amounts recorded for appointments with you. These are ledger records, not payment transfers.</p>
+    {% if refunds_error %}<div class="error-card">{{ refunds_error }}</div>
+    {% elif refund_rows %}
+      <div class="doctor-appointments-table-wrap">
+        <table class="doctor-appointments-table refund-ledger-table">
+          <thead><tr><th>Patient</th><th>Appointment (IST)</th><th>Consultation fee</th><th>Cancelled by</th><th>Refund</th><th>Reason</th><th>Recorded</th></tr></thead>
+          <tbody>
+          {% for r in refund_rows %}
+            <tr>
+              <td><strong>{{ r.patient_first_name or 'Patient' }} {{ r.patient_last_name or '' }}</strong><small>{{ r.patient_email or '' }}</small></td>
+              <td>{{ r.start_at_ist|string|replace('T',' ') }}</td>
+              <td>₹{{ '%.2f'|format((r.original_fee or 0)|float) }}</td>
+              <td>{{ 'Doctor' if (r.cancellation_type|string|upper) == 'DOCTOR' else 'Patient' }}</td>
+              <td><strong>₹{{ '%.2f'|format((r.refund_amount or 0)|float) }}</strong><small>{{ r.refund_percentage or 0 }}% refund</small></td>
+              <td>{{ (r.refund_tier or 'UNSPECIFIED')|replace('_',' ')|title }}</td>
+              <td>{{ r.created_at|string|replace('T',' ') }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><h3>No refunds recorded</h3><p>Refund ledger entries for your appointments will appear here.</p></div>
+    {% endif %}
   {% else %}
-    <div class="empty-state"><div class="empty-icon">♡</div><h2>No appointments yet</h2><p>Patient bookings for your consultation slots will appear here.</p></div>
+    {% if appointments_error %}<div class="error-card">{{ appointments_error }}</div>
+    {% elif appointments %}
+      <div class="doctor-appointments-table-wrap">
+        <table class="doctor-appointments-table">
+          <thead><tr><th>Patient</th><th>Date &amp; time (IST)</th><th>Consultation</th><th>Fee</th><th>Status</th><th>Action</th></tr></thead>
+          <tbody>
+          {% for a in appointments %}
+            {% set status = a.get('_display_status') or (a.status|string|upper) %}
+            <tr>
+              <td><strong>{{ a.patient_first_name or 'Patient' }} {{ a.patient_last_name or '' }}</strong><small>{{ a.patient_phone or a.patient_email or 'Contact unavailable' }}</small></td>
+              <td>{{ a.start_at_ist|string|replace('T',' ') }}<small>To {{ a.end_at_ist|string|replace('T',' ') }}</small></td>
+              <td>{{ a.consultation_type or 'Consultation' }}</td>
+              <td>₹{{ '%.2f'|format((a.consultation_fee or a.fee or 0)|float) }}</td>
+              <td><span class="status-pill {{ 'good' if status == 'CONFIRMED' else 'warning' }}">{{ status|replace('_',' ')|title }}</span></td>
+              <td>
+                {% if status == 'CONFIRMED' %}
+                  <form method="post" action="{{ url_for('doctor.cancel_appointment', appointment_id=a.appointment_id) }}" onsubmit="return confirm('Cancel this appointment? The applicable doctor cancellation refund will be recorded.');">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button class="btn danger-ghost" type="submit">Cancel appointment</button>
+                  </form>
+                {% else %}<span class="muted">—</span>{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty-state"><h3>No {{ appointment_view }} appointments</h3><p>Appointments matching this view will appear here.</p></div>
+    {% endif %}
   {% endif %}
-  <p class="muted doctor-refund-note">Doctor-initiated cancellation records a 100% refund for the patient. Refunds are recorded in the ledger; no payment gateway is connected.</p>
 </section>
 <style>
 .doctor-appointments-panel{width:100%;min-width:0}
 .doctor-appointments-heading{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+.appointment-filter-nav{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0 24px;padding-bottom:14px;border-bottom:1px solid var(--border,rgba(255,255,255,.12))}
+.appointment-filter-nav a{display:inline-flex;padding:10px 16px;border-radius:10px;text-decoration:none;color:var(--text,#eaf2f7);background:rgba(255,255,255,.04);border:1px solid var(--border,rgba(255,255,255,.12))}
+.appointment-filter-nav a.active{background:rgba(83,197,187,.16);border-color:#53c5bb;color:#53c5bb;font-weight:700}
 .doctor-appointments-table-wrap{width:100%;overflow-x:auto}
-.doctor-appointments-table{width:100%;table-layout:fixed;border-collapse:collapse}
+.doctor-appointments-table{width:100%;min-width:850px;table-layout:auto;border-collapse:collapse}
 .doctor-appointments-table th,.doctor-appointments-table td{padding:14px 12px;text-align:left;vertical-align:middle;border-bottom:1px solid var(--border,rgba(255,255,255,.10));overflow-wrap:anywhere}
 .doctor-appointments-table th{font-size:.88rem;white-space:nowrap}
 .doctor-appointments-table td{font-size:.92rem}
 .doctor-appointments-table td small{display:block;margin-top:5px;color:var(--muted,#9db0bd);font-size:.8rem}
-.doctor-appointments-table th:nth-child(1){width:22%}
-.doctor-appointments-table th:nth-child(2){width:24%}
-.doctor-appointments-table th:nth-child(3){width:16%}
-.doctor-appointments-table th:nth-child(4){width:10%}
-.doctor-appointments-table th:nth-child(5){width:12%}
-.doctor-appointments-table th:nth-child(6){width:16%}
 .doctor-appointments-table .btn{white-space:nowrap}
-.doctor-refund-note{margin-top:16px;font-size:.82rem}
-@media(max-width:900px){.doctor-appointments-table{min-width:850px}}
+@media(max-width:900px){.doctor-appointments-table{min-width:950px}}
 </style>
 {% endif %}</div></main></div>{% endblock %}
