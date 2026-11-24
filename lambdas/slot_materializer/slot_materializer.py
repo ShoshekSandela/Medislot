@@ -378,15 +378,6 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
     generated_slot_ids = set()
     generated_slot_keys = set()
 
-    buffer_minutes = int(
-        os.environ.get("SLOT_BUFFER_MINUTES", "15")
-    )
-
-    if buffer_minutes < 0:
-        raise ValueError(
-            "SLOT_BUFFER_MINUTES cannot be negative"
-        )
-
     for availability_index, availability in enumerate(availability_records, start=1):
         logger.info(
             "STEP 3C: Processing availability %s/%s availability_id=%s doctor_id=%s hospital_id=%s consultation_type_id=%s",
@@ -431,20 +422,16 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
         )
 
         logger.info(
-            "AVAILABILITY WINDOW: doctor_id=%s date=%s start=%s end=%s duration_minutes=%s buffer_minutes=%s capacity=%s",
+            "AVAILABILITY WINDOW: doctor_id=%s date=%s start=%s end=%s duration_minutes=%s capacity=%s",
             availability["doctor_id"], target_date.isoformat(),
             window_start.isoformat(), window_end.isoformat(), duration_minutes,
-            buffer_minutes, availability.get("capacity", 1)
+            availability.get("capacity", 1)
         )
 
         current_start = window_start
 
         consultation_duration = timedelta(
             minutes=duration_minutes
-        )
-
-        buffer_duration = timedelta(
-            minutes=buffer_minutes
         )
 
         while (
@@ -485,9 +472,9 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
                 if result == "duplicate_blackout":
                     results["blackout_slots"] += 1
 
-            current_start = (
-                current_end + buffer_duration
-            )
+            # No extra gap between consultations: the next slot starts
+            # immediately when the previous consultation ends.
+            current_start = current_end
 
     logger.info(
         "SLOT GENERATION COMPLETE: date=%s doctor_id=%s generated_slot_count=%s created=%s duplicates=%s blackout_slots=%s",

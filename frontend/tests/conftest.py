@@ -37,7 +37,21 @@ def app(tmp_path, monkeypatch):
         if path.endswith("/doctors/9") and method == "GET":
             return FakeResponse(200, {"doctor_id": 9, "first_name": "Test", "hospitals": [], "specialisations": [], "consultation_types": []})
         if path.endswith("/doctors/9/slots") and method == "GET":
-            return FakeResponse(200, {"doctor_id": 9, "slots": [], "total_slots": 0})
+            return FakeResponse(200, {
+                "doctor_id": 9,
+                "slots": [{
+                    "slotId": "9#1#1#2026-11-25T10:00:00+05:30",
+                    "slotTime": "2026-11-25T10:00:00+05:30",
+                    "consultationTypeId": 1, "consultationFee": "500.00",
+                    "freeSeats": 1, "status": "AVAILABLE"
+                }],
+                "total_slots": 1
+            })
+        if path.endswith("/appointments") and method == "POST":
+            return FakeResponse(201, {
+                "message": "Appointment booked successfully",
+                "appointment": {"appointment_id": 123, "status": "BOOKED"}
+            })
         if path.endswith("/auth/refresh"):
             return FakeResponse(200, {
                 "accessToken": "test-access-new", "refreshToken": "test-refresh",

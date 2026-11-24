@@ -79,3 +79,32 @@ def test_schedule_week_and_dashboard_render(client):
     assert client.get("/doctor/dashboard").status_code == 200
     assert client.get("/doctor/schedule?view=week").status_code == 200
 
+
+
+
+def test_patient_doctor_detail_uses_one_date_and_shows_booking_button(client):
+    client.post("/patient/login", data={
+        "email": "patient@example.com", "password": "StrongPassword123!"
+    })
+    response = client.get("/patient/doctors/9?date=2026-11-25")
+    assert response.status_code == 200
+    assert b'name="date"' in response.data
+    assert b'name="start_date"' not in response.data
+    assert b'name="end_date"' not in response.data
+    assert b"Book this slot" in response.data
+    assert b"2026-11-25" in response.data
+
+
+def test_patient_can_submit_slot_booking(client):
+    client.post("/patient/login", data={
+        "email": "patient@example.com", "password": "StrongPassword123!"
+    })
+    response = client.post("/patient/book", data={
+        "doctor_id": "9",
+        "slot_id": "9#1#1#2026-11-25T10:00:00+05:30",
+        "slot_time": "2026-11-25T10:00:00+05:30",
+        "date": "2026-11-25",
+        "idempotency_key": "test-idempotency-key",
+    })
+    assert response.status_code == 302
+    assert "/patient/doctors/9?date=2026-11-25" in response.headers["Location"]

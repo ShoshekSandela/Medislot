@@ -44,7 +44,7 @@ def _log(level, correlation_id, path, status, started):
     getattr(log, level)(jsonlib.dumps(record, separators=(",", ":")))
 
 
-def request(method, path, *, json=None, params=None, auth=True, retry=True, files=None):
+def request(method, path, *, json=None, params=None, auth=True, retry=True, files=None, extra_headers=None):
     """Call one documented API route; refresh once after a protected 401."""
     from .config import FEATURE_FLAGS
 
@@ -69,6 +69,8 @@ def request(method, path, *, json=None, params=None, auth=True, retry=True, file
     token = session.get("accessToken") if auth else None
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if extra_headers:
+        headers.update(extra_headers)
 
     base_url = current_app.config.get("API_BASE_URL", "").rstrip("/")
     if not base_url:
@@ -128,7 +130,10 @@ def request(method, path, *, json=None, params=None, auth=True, retry=True, file
                     session["refreshToken"] = refreshed.get("refreshToken", refresh_token)
                     if refreshed.get("expiresIn"):
                         session["expiresAt"] = int(time.time()) + int(refreshed["expiresIn"])
-                    return request(method, path, json=json, params=params, auth=True, retry=False, files=files)
+                    return request(
+                        method, path, json=json, params=params, auth=True,
+                        retry=False, files=files, extra_headers=extra_headers,
+                    )
             except APIError as refresh_error:
                 if refresh_error.status not in (401, 403):
                     raise
@@ -149,8 +154,8 @@ def get(path, params=None, *, auth=True):
     return request("GET", path, params=params, auth=auth)
 
 
-def post(path, data, auth=True):
-    return request("POST", path, json=data, auth=auth)
+def post(path, data, auth=True, headers=None):
+    return request("POST", path, json=data, auth=auth, extra_headers=headers)
 
 
 def put(path, data):

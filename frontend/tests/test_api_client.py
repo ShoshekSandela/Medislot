@@ -77,3 +77,26 @@ def test_disabled_endpoint_does_not_call_backend(app, monkeypatch):
             assert exc.status == 501
         else:
             raise AssertionError("Expected disabled endpoint error")
+
+
+
+def test_post_passes_idempotency_header(app, monkeypatch):
+    import app.api_client as api
+    seen = {}
+
+    def fake(method, url, **kwargs):
+        seen.update(kwargs)
+        return Response(201, {"appointment": {"appointment_id": 123}})
+
+    monkeypatch.setattr(api.requests, "request", fake)
+    with app.test_request_context("/patient/book"):
+        from flask import session
+        session["accessToken"] = "patient-token"
+        result = api.post(
+            "/appointments",
+            {"doctor_id": 9, "slot_time": "2026-11-25T10:00:00+05:30"},
+            headers={"Idempotency-Key": "stable-booking-key"},
+        )
+    assert result["appointment"]["appointment_id"] == 123
+    assert seen["headers"]["Idempotency-Key"] == "stable-booking-key"
+    assert seen["headers"]["Authorization"] == "Bearer patient-token"
