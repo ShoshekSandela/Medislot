@@ -1732,10 +1732,15 @@ def public_doctor_slots(connection, doctor_id, query_params):
             )
             continue
 
-        if str(item.get("status", "")).upper() != "AVAILABLE":
+        slot_status = str(item.get("status", "")).upper()
+        # Older fully-booked records may retain a full-state status even after
+        # cancellation releases a seat. Treat them as bookable when capacity is
+        # available, but continue to exclude terminal/blocked states.
+        if slot_status not in {"AVAILABLE", "FULL", "FULLY_BOOKED", "BOOKED"}:
             continue
         if item.get("isBlackout") is True or booked >= capacity:
             continue
+        item["status"] = "AVAILABLE"
         if str(item.get("slotTime", ""))[:19] <= now_ist:
             continue
 

@@ -193,6 +193,7 @@ def test_cancelled_seat_release_converts_legacy_map_counter_once(monkeypatch):
                 "slotTime": "2026-12-01T09:00:00+05:30",
                 "slotId": "42#7#3#2026-12-01T09:00:00+05:30",
                 "bookedCount": {"appointment-1": True, "appointment-2": True},
+                "status": "FULLY_BOOKED",
                 "version": 2,
             }
 
@@ -227,6 +228,7 @@ def test_cancelled_seat_release_converts_legacy_map_counter_once(monkeypatch):
                     "TransactWriteItems",
                 )
             self.slots.item["bookedCount"] = int(values[":new_count"]["N"])
+            self.slots.item["status"] = update["ExpressionAttributeValues"][":new_status"]["S"]
             self.slots.item["version"] += 1
             put = TransactItems[1]["Put"]["Item"]
             key = put["idemKey"]["S"]
@@ -253,6 +255,7 @@ def test_cancelled_seat_release_converts_legacy_map_counter_once(monkeypatch):
     )
     assert released is True
     assert slots.item["bookedCount"] == 1
+    assert slots.item["status"] == "AVAILABLE"
 
     retried = appointment.release_cancelled_seat_once(
         77, 42, slots.item["slotTime"], slots.item["slotId"]

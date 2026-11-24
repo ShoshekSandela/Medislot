@@ -330,6 +330,12 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
         raw_booked = slot.get("bookedCount", 0)
         booked = booked_count_value(raw_booked)
         version = int(slot.get("version", 1) or 1)
+        current_status = str(slot.get("status", "AVAILABLE")).upper()
+        # Some older slot records persist a full-state label. Once a seat is
+        # released, make those slots bookable again. Never reopen blackout,
+        # inactive, or doctor-cancelled slots.
+        reopenable_statuses = {"AVAILABLE", "FULL", "FULLY_BOOKED", "BOOKED"}
+        next_status = "AVAILABLE" if current_status in reopenable_statuses else current_status
 
         marker_put = {
             "Put": {
@@ -342,22 +348,11 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
             }
         }
 
-        if booked <= 0:
-            # Never decrement below zero. Still persist the marker atomically,
-            # so a retry cannot release a different appointment's seat.
-            try:
-                client.transact_write_items(TransactItems=[marker_put])
-                return False
-            except ClientError as error:
-                if error.response.get("Error", {}).get("Code") == "TransactionCanceledException":
-                    marker_result = idempotency_table.get_item(
-                        Key={"idemKey": marker}, ConsistentRead=True
-                    )
-                    if marker_result.get("Item"):
-                        return False
-                    if attempt < 4:
-                        continue
-                raise
+        # Even when the numeric count is already zero, write the normalised
+        # counter/status with the idempotency marker. This repairs legacy
+        # FULL/FULLY_BOOKED labels without ever decrementing below zero.
+        new_booked = max(0, booked - 1)
+        released = booked > 0
 
         # The version is the compare-and-swap token. Every booking and seat
         # release increments it, so checking the exact version prevents lost
@@ -368,7 +363,7 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
             else "attribute_not_exists(#booked)"
         )
         condition_values = {
-            ":new_count": {"N": str(booked - 1)},
+            ":new_count": {"N": str(new_booked)},
             ":slot_id": {"S": str(slot_id)},
             ":version": {"N": str(version)},
             ":one": {"N": "1"},
@@ -381,15 +376,22 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
                     "doctorId": {"S": str(doctor_id)},
                     "slotTime": {"S": slot_time},
                 },
-                "UpdateExpression": "SET #booked = :new_count, #v = #v + :one",
+                "UpdateExpression": (
+                    "SET #booked = :new_count, #status = :new_status, "
+                    "#v = #v + :one"
+                ),
                 "ConditionExpression": (
                     f"{counter_condition} AND slotId = :slot_id AND #v = :version"
                 ),
                 "ExpressionAttributeNames": {
                     "#booked": "bookedCount",
+                    "#status": "status",
                     "#v": "version",
                 },
-                "ExpressionAttributeValues": condition_values,
+                "ExpressionAttributeValues": {
+                    **condition_values,
+                    ":new_status": {"S": next_status},
+                },
             }
         }
 
@@ -397,11 +399,11 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
             client.transact_write_items(TransactItems=[update, marker_put])
             logger.info(
                 "Cancelled appointment seat released appointment_id=%s doctor_id=%s "
-                "booked_count=%s->%s counter_type=%s",
-                appointment_id, doctor_id, booked, booked - 1,
-                type(raw_booked).__name__,
+                "booked_count=%s->%s status=%s->%s released=%s counter_type=%s",
+                appointment_id, doctor_id, booked, new_booked,
+                current_status, next_status, released, type(raw_booked).__name__,
             )
-            return True
+            return released
         except ClientError as error:
             code = error.response.get("Error", {}).get("Code")
             if code == "TransactionCanceledException":
