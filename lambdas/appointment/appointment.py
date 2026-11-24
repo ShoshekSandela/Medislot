@@ -1044,9 +1044,25 @@ def list_refunds(caller_id, role):
         with connection.cursor() as cursor:
             cursor.execute(
                 f"""SELECT r.refund_id, r.appointment_id, r.cancellation_type,
-                           r.original_fee, r.refund_percentage, r.refund_amount, r.refund_tier,
+                           COALESCE(
+                               NULLIF(r.original_fee, 0),
+                               NULLIF(a.consultation_fee, 0),
+                               ct.consultation_fee
+                           ) AS original_fee,
+                           r.refund_percentage,
+                           CASE
+                               WHEN r.refund_amount > 0 THEN r.refund_amount
+                               ELSE ROUND(
+                                   COALESCE(
+                                       NULLIF(r.original_fee, 0),
+                                       NULLIF(a.consultation_fee, 0),
+                                       ct.consultation_fee
+                                   ) * r.refund_percentage / 100,
+                                   2
+                               )
+                           END AS refund_amount,
                            r.created_at, a.start_at_ist, a.end_at_ist, a.slot_id,
-                           a.consultation_fee, a.status,
+                           a.status,
                            p.first_name AS patient_first_name,
                            p.last_name AS patient_last_name,
                            p.email AS patient_email,
@@ -1054,6 +1070,8 @@ def list_refunds(caller_id, role):
                            d.last_name AS doctor_last_name
                     FROM refund_ledger r
                     JOIN appointments a ON a.appointment_id = r.appointment_id
+                    JOIN consultation_types ct
+                      ON ct.consultation_type_id = a.consultation_type_id
                     JOIN patients p ON p.patient_id = a.patient_id
                     JOIN doctors d ON d.doctor_id = a.doctor_id
                     WHERE {where}

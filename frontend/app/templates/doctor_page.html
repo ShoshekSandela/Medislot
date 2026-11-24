@@ -209,7 +209,7 @@
     {% elif refund_rows %}
       <div class="doctor-appointments-table-wrap">
         <table class="doctor-appointments-table refund-ledger-table">
-          <thead><tr><th>Patient</th><th>Appointment (IST)</th><th>Consultation fee</th><th>Cancelled by</th><th>Refund</th><th>Reason</th><th>Recorded</th></tr></thead>
+          <thead><tr><th>Patient</th><th>Appointment (IST)</th><th>Consultation fee</th><th>Cancelled by</th><th>Refund amount</th><th>Recorded</th></tr></thead>
           <tbody>
           {% for r in refund_rows %}
             <tr>
@@ -218,7 +218,6 @@
               <td>₹{{ '%.2f'|format((r.original_fee or 0)|float) }}</td>
               <td>{{ 'Doctor' if (r.cancellation_type|string|upper) == 'DOCTOR' else 'Patient' }}</td>
               <td><strong>₹{{ '%.2f'|format((r.refund_amount or 0)|float) }}</strong><small>{{ r.refund_percentage or 0 }}% refund</small></td>
-              <td>{{ (r.refund_tier or 'UNSPECIFIED')|replace('_',' ')|title }}</td>
               <td>{{ r.created_at|string|replace('T',' ') }}</td>
             </tr>
           {% endfor %}
