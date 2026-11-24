@@ -2309,17 +2309,27 @@ def schedule():
 
 
 @bp.get("/appointments")
-
 @doctor_required
-
 def appointments():
+    """Show appointments belonging to the signed-in doctor."""
+    try:
+        result = get("/appointments")
+        appointment_rows = (
+            result.get("appointments", [])
+            if isinstance(result, dict)
+            else result
+        )
+        if not isinstance(appointment_rows, list):
+            appointment_rows = []
+        load_error = None
+    except APIError as exc:
+        appointment_rows = []
+        load_error = exc.message
+        flash(exc.message, "error")
 
     return page(
-
         "Appointments",
-
         "appointments",
-
-        feature_enabled=False
-
+        appointments=appointment_rows,
+        appointments_error=load_error,
     )

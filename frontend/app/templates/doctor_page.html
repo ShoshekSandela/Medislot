@@ -189,5 +189,33 @@
  {% endif %}
 </section>
 {% endif %}
-{% elif active=='appointments' %}<div class="empty-state"><div class="empty-icon">♡</div><h2>Appointments management</h2><p>Appointment listing and visit management are not available yet.</p><div class="disabled-actions"><button class="btn secondary" {% if not feature_flags.appointments %}disabled title="Not available yet"{% endif %}>Appointments list</button><button class="btn secondary" {% if not feature_flags.cancel_slot %}disabled title="Not available yet"{% endif %}>Cancel slot</button><button class="btn secondary" {% if not feature_flags.appointment_outcome %}disabled title="Not available yet"{% endif %}>Mark completed / no-show</button></div><p class="muted">These actions will become available when the appointment API is supported.</p></div>
-{% endif %}</div></main></div>{% endblock %}
+{% elif active=='appointments' %}
+<section class="panel">
+ <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+  <div><h2>Appointments</h2><p class="muted">Bookings made by patients with you</p></div>
+  <a class="btn secondary" href="{{ url_for('doctor.appointments') }}">↻ Refresh</a>
+ </div>
+ {% if appointments_error %}
+  <div class="error-card">{{ appointments_error }}</div>
+ {% elif appointments %}
+  <div style="overflow-x:auto">
+   <table style="width:100%;border-collapse:collapse">
+    <thead><tr><th>Patient</th><th>Date &amp; time (IST)</th><th>Consultation</th><th>Hospital</th><th>Fee</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for a in appointments %}
+     <tr>
+      <td><strong>{{ a.patient_first_name or 'Patient' }} {{ a.patient_last_name or '' }}</strong><br><small>{{ a.patient_phone or a.patient_email or 'Contact unavailable' }}</small></td>
+      <td>{{ a.start_at_ist|string|replace('T',' ') }}<br><small>To {{ a.end_at_ist|string|replace('T',' ') }}</small></td>
+      <td>{{ a.consultation_type or 'Consultation' }}</td>
+      <td>{{ a.hospital_name or '—' }}{% if a.branch_name %}<br><small>{{ a.branch_name }}{% if a.city %}, {{ a.city }}{% endif %}</small>{% endif %}</td>
+      <td>₹{{ '%.2f'|format(a.consultation_fee|float) }}</td>
+      <td><span class="status-pill {{ 'good' if (a.status|string|upper) == 'BOOKED' else 'muted-pill' }}">{{ (a.status|string|replace('_',' '))|title }}</span></td>
+     </tr>
+    {% endfor %}
+    </tbody>
+   </table>
+  </div>
+ {% else %}
+  <div class="empty-state"><div class="empty-icon">♡</div><h2>No appointments yet</h2><p>Patient bookings for your consultation slots will appear here.</p></div>
+ {% endif %}
+</section>{% endif %}</div></main></div>{% endblock %}

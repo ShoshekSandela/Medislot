@@ -953,10 +953,15 @@ def list_appointments(caller_id, role):
                            a.consultation_fee, a.created_at,
                            d.first_name AS doctor_first_name,
                            d.last_name AS doctor_last_name,
+                           p.first_name AS patient_first_name,
+                           p.last_name AS patient_last_name,
+                           p.phone AS patient_phone,
+                           p.email AS patient_email,
                            h.hospital_name, h.branch_name, h.city,
                            ct.type_name AS consultation_type
                     FROM appointments a
                     JOIN doctors d ON d.doctor_id = a.doctor_id
+                    JOIN patients p ON p.patient_id = a.patient_id
                     JOIN hospitals h ON h.hospital_id = a.hospital_id
                     JOIN consultation_types ct
                       ON ct.consultation_type_id = a.consultation_type_id
