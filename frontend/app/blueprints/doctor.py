@@ -1969,6 +1969,24 @@ def schedule():
 
         blackouts = data.get("blackouts") or []
 
+        rds_appointments = data.get("appointments") or []
+
+        # Build a slot_id -> confirmed booking count from RDS.
+        # RDS is the system of record: a cancellation is reflected here
+        # immediately, while DynamoDB bookedCount is updated by a separate
+        # transaction that may lag. Using this count ensures the schedule
+        # always shows the true number of live BOOKED seats, so a slot freed
+        # by patient cancellation shows as Open rather than "Fully booked".
+        rds_booked_by_slot = {}
+
+        for appt in rds_appointments:
+
+            sid = str(appt.get("slot_id") or "")
+
+            if sid:
+
+                rds_booked_by_slot[sid] = rds_booked_by_slot.get(sid, 0) + 1
+
 
 
         combined = []
@@ -2014,9 +2032,21 @@ def schedule():
 
             )
 
+            # Prefer the RDS-derived count (live, authoritative) over the
+            # DynamoDB counter (eventually consistent, may lag cancellations).
+            slot_id_key = str(slot.get("slotId") or "")
 
+            if slot_id_key in rds_booked_by_slot:
 
-            booked = booked_count_value(slot.get("bookedCount", 0))
+                booked = rds_booked_by_slot[slot_id_key]
+
+            else:
+
+                booked = booked_count_value(slot.get("bookedCount", 0))
+
+            # Write the reconciled count back so the template reads
+            # the same corrected value from s.bookedCount.
+            slot["bookedCount"] = booked
 
 
 
