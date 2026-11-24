@@ -1476,12 +1476,18 @@ def doctor_schedule(connection, doctor_id, query_params):
             Key("doctorId").eq(str(doctor_id))
             & Key("slotTime").between(day_start, day_end)
         )
-        result = table.query(KeyConditionExpression=key_condition)
+        # Read bookedCount immediately after a booking, not from an eventually
+        # consistent Query result.
+        result = table.query(
+            KeyConditionExpression=key_condition,
+            ConsistentRead=True,
+        )
         slots = result.get("Items", [])
         while result.get("LastEvaluatedKey"):
             result = table.query(
                 KeyConditionExpression=key_condition,
                 ExclusiveStartKey=result["LastEvaluatedKey"],
+                ConsistentRead=True,
             )
             slots.extend(result.get("Items", []))
         # Old slots can remain in DynamoDB for audit/history after an availability
@@ -1650,8 +1656,10 @@ def public_doctor_slots(connection, doctor_id, query_params):
         & Key("slotTime").between(start_key, end_inclusive)
     )
     items = []
+    # Avoid showing a just-booked final seat as available to another patient.
     result = table.query(
         KeyConditionExpression=key_condition,
+        ConsistentRead=True,
     )
     items.extend(result.get("Items", []))
 
@@ -1659,6 +1667,7 @@ def public_doctor_slots(connection, doctor_id, query_params):
         result = table.query(
             KeyConditionExpression=key_condition,
             ExclusiveStartKey=result["LastEvaluatedKey"],
+            ConsistentRead=True,
         )
         items.extend(result.get("Items", []))
 

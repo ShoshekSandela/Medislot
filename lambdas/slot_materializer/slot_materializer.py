@@ -430,14 +430,12 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
 
         current_start = window_start
 
-        consultation_duration = timedelta(
-            minutes=duration_minutes
-        )
+        # Each consultation starts immediately after the previous one ends.
+        # There is deliberately no additional buffer between appointments.
+        consultation_duration = timedelta(minutes=duration_minutes)
+        slot_interval = consultation_duration
 
-        while (
-            current_start + consultation_duration
-            <= window_end
-        ):
+        while current_start + consultation_duration <= window_end:
 
             current_end = (
                 current_start + consultation_duration
@@ -472,9 +470,8 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
                 if result == "duplicate_blackout":
                     results["blackout_slots"] += 1
 
-            # No extra gap between consultations: the next slot starts
-            # immediately when the previous consultation ends.
-            current_start = current_end
+            # Advance by consultation duration only: no 15-minute buffer.
+            current_start += slot_interval
 
     logger.info(
         "SLOT GENERATION COMPLETE: date=%s doctor_id=%s generated_slot_count=%s created=%s duplicates=%s blackout_slots=%s",
