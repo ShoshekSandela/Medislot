@@ -195,7 +195,15 @@ def doctor_detail(doctor_id):
                 slot["display_date"] = raw_time[:10] or "Date unavailable"
                 slot["display_time"] = raw_time[11:16] or "Time unavailable"
 
-            consultation = type_by_id.get(str(slot.get("consultationTypeId")), {})
+            consultation_type_id = (
+                slot.get("consultationTypeId")
+                or slot.get("consultation_type_id")
+                or slot.get("consultationTypeID")
+            )
+            slot["consultationTypeId"] = (
+                str(consultation_type_id) if consultation_type_id is not None else ""
+            )
+            consultation = type_by_id.get(str(consultation_type_id), {})
             slot["consultation_type_name"] = consultation.get("type_name", "Consultation")
             slot["duration_minutes"] = consultation.get("duration_minutes")
             slot["idempotency_key"] = str(uuid.uuid4())
@@ -298,21 +306,38 @@ def booking_history():
     except APIError:
         directory = {"doctors": [], "pagination": {"total": 0, "total_pages": 1, "page": 1}}
 
-    # Appointment responses contain the doctor ID but not the browser-ready
-    # profile image URL. Reuse the doctor directory's short-lived S3 URLs.
+    # Prefer the appointment's signed URL, then the fresh directory URL.
+    # If neither is available, fetch that doctor's public profile once so
+    # booking history can use its newly generated S3 presigned photo URL.
     directory_doctors = directory.get("doctors", []) if isinstance(directory, dict) else []
     photo_by_doctor = {
         str(item.get("doctor_id")): item.get("profile_photo_display_url")
         for item in directory_doctors
-        if isinstance(item, dict) and item.get("doctor_id") and item.get("profile_photo_display_url")
+        if isinstance(item, dict)
+        and item.get("doctor_id") is not None
+        and item.get("profile_photo_display_url")
     }
     if isinstance(bookings, list):
         for booking in bookings:
-            if isinstance(booking, dict):
-                booking["profile_photo_display_url"] = (
-                    booking.get("profile_photo_display_url")
-                    or photo_by_doctor.get(str(booking.get("doctor_id")))
-                )
+            if not isinstance(booking, dict):
+                continue
+            doctor_id = booking.get("doctor_id") or booking.get("doctorId")
+            photo_url = (
+                booking.get("profile_photo_display_url")
+                or photo_by_doctor.get(str(doctor_id))
+            )
+            if not photo_url and doctor_id:
+                try:
+                    doctor_profile = get(f"/doctors/{int(doctor_id)}")
+                    if isinstance(doctor_profile, dict):
+                        doctor_profile = doctor_profile.get("doctor", doctor_profile)
+                    photo_url = (
+                        doctor_profile.get("profile_photo_display_url")
+                        if isinstance(doctor_profile, dict) else None
+                    )
+                except (APIError, TypeError, ValueError):
+                    photo_url = None
+            booking["profile_photo_display_url"] = photo_url
 
     return render_template(
         "components/patient_dashboard.html", profile=profile,

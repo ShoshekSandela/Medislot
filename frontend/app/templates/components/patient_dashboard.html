@@ -9,13 +9,6 @@
       <a href="#profile" data-patient-nav="profile" class="{{ 'active' if active_page == 'profile' else '' }}">◉ <span>My profile</span></a>
       <a href="#find-doctors" data-patient-nav="find-doctors" class="{{ 'active' if active_page in ['find-doctors', 'doctor-detail'] else '' }}">⌕ <span>Find doctors</span></a>
       <a href="{{ url_for('patient.booking_history') }}#booking-history" data-patient-nav="booking-history" class="{{ 'active' if active_page == 'booking-history' else '' }}">▤ <span>My Booking History</span></a>
-      {% if active_page == 'booking-history' %}
-      <div class="patient-history-subnav" aria-label="Booking history filters">
-        <a href="#booking-history" data-booking-filter="upcoming" class="selected">Upcoming</a>
-        <a href="#booking-history" data-booking-filter="today">Today</a>
-        <a href="#booking-history" data-booking-filter="cancelled">Cancelled</a>
-      </div>
-      {% endif %}
     </nav>
     <div class="sidebar-bottom">
       <div class="secure-note">⌑ <span>Your account is private<br><small>Protected patient access</small></span></div>
@@ -208,13 +201,12 @@
                 {% endif %}
                 {% set refund = refund_by_appointment.get(booking.appointment_id|string) if refund_by_appointment else none %}
                 {% if refund %}
-                  <small>Refund: ₹{{ refund.refund_amount }} ({{ refund.refund_percentage }}%) · {{ refund.refund_tier }}</small>
+                  <div class="patient-refund-summary"><strong>Refund:</strong> ₹{{ refund.refund_amount }} ({{ refund.refund_percentage }}%) · {{ refund.refund_tier }}</div>
                 {% endif %}
               </div>
             </article>
             {% endfor %}
           </div>
-          <div class="empty-state patient-filter-empty" id="patient-booking-filter-empty" hidden><div class="empty-icon">▤</div><h3>No appointments in this category</h3><p>Choose another booking history filter to view your appointments.</p></div>
           {% else %}
           <div class="empty-state"><div class="empty-icon">▤</div><h3>No appointments yet</h3><p>Your confirmed appointments will appear here once they are booked.</p><a class="btn primary" href="#find-doctors">Find a doctor</a></div>
           {% endif %}
@@ -263,30 +255,11 @@
   document.querySelectorAll('a[href="#find-doctors"]').forEach(a=>a.addEventListener('click',()=>showPage('find-doctors')));
   route();
 
-  const bookingCards=[...document.querySelectorAll('[data-booking-card]')];
-  const bookingFilters=[...document.querySelectorAll('[data-booking-filter]')];
-  const bookingEmpty=document.getElementById('patient-booking-filter-empty');
-  function applyBookingFilter(filter){
-    if(!bookingCards.length) return;
-    const today='{{ today }}';
-    let visible=0;
-    bookingCards.forEach(card=>{
-      const date=card.dataset.bookingDate||'';
-      const status=card.dataset.bookingStatus||'active';
-      const show=filter==='cancelled' ? status==='cancelled' : filter==='today' ? date===today && status==='active' : date>today && status==='active';
-      card.hidden=!show; if(show) visible+=1;
-    });
-    bookingFilters.forEach(link=>link.classList.toggle('selected',link.dataset.bookingFilter===filter));
-    if(bookingEmpty) bookingEmpty.hidden=visible!==0;
-  }
-  bookingFilters.forEach(link=>link.addEventListener('click',()=>applyBookingFilter(link.dataset.bookingFilter)));
-  if(bookingCards.length) applyBookingFilter('upcoming');
-
   const slotFilter=document.getElementById('patient-slot-type-filter');
   const slotCards=[...document.querySelectorAll('.patient-slot-card')];
   const noSlotResults=document.getElementById('patient-slot-no-results');
   if(slotFilter){
-    slotFilter.addEventListener('change',()=>{
+    function applyConsultationFilter(){
       const selectedType=slotFilter.value;
       let visibleCount=0;
       slotCards.forEach(card=>{
@@ -295,21 +268,24 @@
         if(visible) visibleCount+=1;
       });
       if(noSlotResults) noSlotResults.hidden=visibleCount!==0;
-    });
+    }
+    slotFilter.addEventListener('change',applyConsultationFilter);
+    // Apply the selected consultation type immediately, not only after
+    // the patient changes the dropdown.
+    applyConsultationFilter();
   }
 })();
 </script>
 {% endblock %}
 
 <style>
-.patient-history-subnav{display:grid;gap:4px;margin:0 0 8px 34px;padding-left:12px;border-left:1px solid var(--line)}
-.patient-history-subnav a{display:block;padding:7px 10px;border-radius:8px;color:var(--muted);font-size:12px}
-.patient-history-subnav a.selected{background:var(--accent);color:var(--primary);font-weight:700}
 .patient-booking-card[hidden]{display:none!important}
 .patient-booking-actions .btn{white-space:nowrap}
+.patient-refund-summary{display:block;width:100%;max-width:220px;text-align:right;line-height:1.5;overflow-wrap:anywhere;color:var(--muted);font-size:12px}
+.patient-refund-summary strong{color:var(--text)}
 .patient-booking-actions{display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:10px;min-width:150px}
 .patient-booking-actions form{margin:0}
-@media(max-width:760px){.patient-booking-actions{align-items:flex-start;width:100%}}
+@media(max-width:760px){.patient-booking-actions{align-items:flex-start;width:100%}.patient-refund-summary{text-align:left}}
 </style>
 
 <style>

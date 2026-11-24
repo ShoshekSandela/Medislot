@@ -1344,6 +1344,39 @@ def blackouts(connection, doctor_id, method, data, item_id=None):
             if not assigned_hospital:
                 return response(400, {"message": "No active hospital is assigned to your doctor profile. Contact the administrator."})
             hospital_id = int(assigned_hospital["hospital_id"])
+
+            # Never create a blackout over an appointment that a patient has
+            # already booked. The doctor must cancel those appointments first.
+            cursor.execute(
+                """
+                SELECT appointment_id
+                FROM appointments
+                WHERE doctor_id = %s
+                  AND hospital_id = %s
+                  AND status IN ('BOOKED', 'CONFIRMED')
+                  AND start_at_ist < %s
+                  AND end_at_ist > %s
+                LIMIT 1
+                """,
+                (
+                    doctor_id,
+                    hospital_id,
+                    data["end_at_ist"],
+                    data["start_at_ist"],
+                ),
+            )
+            if cursor.fetchone():
+                connection.rollback()
+                return response(
+                    409,
+                    {
+                        "message": (
+                            "Patients have appointments during this time. "
+                            "Cancel them before adding a blackout."
+                        )
+                    },
+                )
+
             cursor.execute(
                 """
                 INSERT INTO doctor_blackouts
