@@ -1739,6 +1739,11 @@ def public_doctor_slots(connection, doctor_id, query_params):
         if str(item.get("slotTime", ""))[:19] <= now_ist:
             continue
 
+        # Return a numeric counter even for legacy Map/List records. The
+        # cancellation Lambda repairs the stored counter atomically; normalising
+        # here keeps the patient-facing profile consistent during migration.
+        item["bookedCount"] = booked
+        item["capacity"] = capacity
         item["freeSeats"] = capacity - booked
         slots.append(item)
 

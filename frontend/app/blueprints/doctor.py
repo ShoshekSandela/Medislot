@@ -55,6 +55,32 @@ ALLOWED = {
 
 
 
+def booked_count_value(value):
+    """Safely read current numeric and legacy Map/List slot counters."""
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    if isinstance(value, dict):
+        for key in ("count", "booked", "bookedCount", "booked_count", "total"):
+            if key in value:
+                return booked_count_value(value[key])
+        for key in ("appointments", "bookings", "appointmentIds", "bookingIds"):
+            if key in value:
+                return booked_count_value(value[key])
+        return len(value)
+    if isinstance(value, (list, tuple, set)):
+        return len(value)
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+
+
 
 def password_errors(p):
 
@@ -519,7 +545,7 @@ def dashboard():
 
     booked = sum(
 
-        int(x.get("bookedCount", 0) or 0)
+        booked_count_value(x.get("bookedCount", 0))
 
         for x in slots
 
@@ -1990,11 +2016,7 @@ def schedule():
 
 
 
-            booked = int(
-
-                slot.get("bookedCount", 0) or 0
-
-            )
+            booked = booked_count_value(slot.get("bookedCount", 0))
 
 
 
@@ -2232,11 +2254,7 @@ def schedule():
 
     for slot in day_slots:
 
-        booked = int(
-
-            slot.get("bookedCount", 0) or 0
-
-        )
+        booked = booked_count_value(slot.get("bookedCount", 0))
 
 
 

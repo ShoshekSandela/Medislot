@@ -216,10 +216,12 @@ def test_cancelled_seat_release_converts_legacy_map_counter_once(monkeypatch):
 
         def transact_write_items(self, TransactItems):
             update = TransactItems[0]["Update"]
+            # DynamoDB cannot compare a legacy Map counter with a number.
+            # The production transaction must use existence + version CAS only.
+            assert ">" not in update["ConditionExpression"]
             values = update["ExpressionAttributeValues"]
-            old_map = values[":old_count"]["M"]
-            current = self.slots.item["bookedCount"]
-            if current != {k: v["BOOL"] for k, v in old_map.items()}:
+            assert update["ConditionExpression"].startswith("attribute_exists(#booked)")
+            if self.slots.item["version"] != int(values[":version"]["N"]):
                 raise ClientError(
                     {"Error": {"Code": "TransactionCanceledException", "Message": "condition"}},
                     "TransactWriteItems",

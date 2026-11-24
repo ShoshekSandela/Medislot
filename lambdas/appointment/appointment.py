@@ -26,7 +26,6 @@ import boto3
 import pymysql
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
-from boto3.dynamodb.types import TypeSerializer
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -298,17 +297,21 @@ def booked_count_value(value):
 
 
 def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
-    """Release a cancelled appointment seat once, including legacy map counters.
+    """Release one cancelled appointment seat exactly once.
 
-    The read is only used to choose the update shape. The transaction condition
-    compares the exact previous bookedCount value, so a concurrent booking
-    causes a retry rather than a lost update.
+    Always replace bookedCount with a numeric value. This supports both current
+    numeric counters and legacy DynamoDB Map/List counters. In particular, do
+    not use a numeric comparison (bookedCount > 0): DynamoDB rejects that
+    expression when an older item stores bookedCount as a Map.
+
+    The slot update and idempotency marker are committed in one transaction.
+    The slot version is the compare-and-swap token. Every booking and release
+    increments it, preventing lost updates without comparing document counters.
     """
     marker = f"SEAT_RELEASE#{appointment_id}"
     client = dynamodb.meta.client
-    serializer = TypeSerializer()
 
-    for attempt in range(4):
+    for attempt in range(5):
         marker_result = idempotency_table.get_item(
             Key={"idemKey": marker}, ConsistentRead=True
         )
@@ -323,6 +326,7 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
         if not slot:
             raise ApiError(409, "The appointment slot no longer exists")
 
+        has_counter = "bookedCount" in slot
         raw_booked = slot.get("bookedCount", 0)
         booked = booked_count_value(raw_booked)
         version = int(slot.get("version", 1) or 1)
@@ -339,71 +343,63 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
         }
 
         if booked <= 0:
-            # Do not decrement below zero. Still write the marker atomically so
-            # a retry cannot release a different appointment's seat.
+            # Never decrement below zero. Still persist the marker atomically,
+            # so a retry cannot release a different appointment's seat.
             try:
                 client.transact_write_items(TransactItems=[marker_put])
                 return False
             except ClientError as error:
-                code = error.response.get("Error", {}).get("Code")
-                if code == "TransactionCanceledException":
+                if error.response.get("Error", {}).get("Code") == "TransactionCanceledException":
                     marker_result = idempotency_table.get_item(
                         Key={"idemKey": marker}, ConsistentRead=True
                     )
                     if marker_result.get("Item"):
                         return False
-                    continue
+                    if attempt < 4:
+                        continue
                 raise
 
-        if isinstance(raw_booked, dict):
-            # Older slot records may contain a Map in bookedCount. Replace the
-            # legacy map with a numeric count in the same transaction as the
-            # one-time release marker.
-            update = {
-                "Update": {
-                    "TableName": slots_table.name,
-                    "Key": {
-                        "doctorId": {"S": str(doctor_id)},
-                        "slotTime": {"S": slot_time},
-                    },
-                    "UpdateExpression": "SET bookedCount = :new_count, #v = #v + :one",
-                    "ConditionExpression": "bookedCount = :old_count AND slotId = :slot_id AND #v = :version",
-                    "ExpressionAttributeNames": {"#v": "version"},
-                    "ExpressionAttributeValues": {
-                        ":new_count": {"N": str(booked - 1)},
-                        ":old_count": serializer.serialize(raw_booked),
-                        ":slot_id": {"S": slot_id},
-                        ":version": {"N": str(version)},
-                        ":one": {"N": "1"},
-                    },
-                }
+        # The version is the compare-and-swap token. Every booking and seat
+        # release increments it, so checking the exact version prevents lost
+        # updates without comparing a Map/List counter to a number (or relying
+        # on DynamoDB Map equality semantics).
+        counter_condition = (
+            "attribute_exists(#booked)" if has_counter
+            else "attribute_not_exists(#booked)"
+        )
+        condition_values = {
+            ":new_count": {"N": str(booked - 1)},
+            ":slot_id": {"S": str(slot_id)},
+            ":version": {"N": str(version)},
+            ":one": {"N": "1"},
+        }
+
+        update = {
+            "Update": {
+                "TableName": slots_table.name,
+                "Key": {
+                    "doctorId": {"S": str(doctor_id)},
+                    "slotTime": {"S": slot_time},
+                },
+                "UpdateExpression": "SET #booked = :new_count, #v = #v + :one",
+                "ConditionExpression": (
+                    f"{counter_condition} AND slotId = :slot_id AND #v = :version"
+                ),
+                "ExpressionAttributeNames": {
+                    "#booked": "bookedCount",
+                    "#v": "version",
+                },
+                "ExpressionAttributeValues": condition_values,
             }
-        else:
-            update = {
-                "Update": {
-                    "TableName": slots_table.name,
-                    "Key": {
-                        "doctorId": {"S": str(doctor_id)},
-                        "slotTime": {"S": slot_time},
-                    },
-                    "UpdateExpression": "SET bookedCount = bookedCount - :one, #v = #v + :one",
-                    "ConditionExpression": "bookedCount = :old_count AND bookedCount > :zero AND slotId = :slot_id AND #v = :version",
-                    "ExpressionAttributeNames": {"#v": "version"},
-                    "ExpressionAttributeValues": {
-                        ":one": {"N": "1"},
-                        ":zero": {"N": "0"},
-                        ":old_count": {"N": str(booked)},
-                        ":slot_id": {"S": slot_id},
-                        ":version": {"N": str(version)},
-                    },
-                }
-            }
+        }
 
         try:
             client.transact_write_items(TransactItems=[update, marker_put])
             logger.info(
-                "Cancelled appointment seat released appointment_id=%s doctor_id=%s booked_count=%s->%s",
+                "Cancelled appointment seat released appointment_id=%s doctor_id=%s "
+                "booked_count=%s->%s counter_type=%s",
                 appointment_id, doctor_id, booked, booked - 1,
+                type(raw_booked).__name__,
             )
             return True
         except ClientError as error:
@@ -414,12 +410,16 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
                 )
                 if marker_result.get("Item"):
                     return False
-                # Another booking/release changed the counter after our read.
-                if attempt < 3:
+                if attempt < 4:
+                    logger.info(
+                        "Retrying seat release after concurrent slot update "
+                        "appointment_id=%s attempt=%s",
+                        appointment_id, attempt + 1,
+                    )
                     continue
             raise
 
-    raise ApiError(409, "Slot availability changed during cancellation. Please retry.")
+    raise ApiError(409, "Slot availability changed during cancellation. Please refresh and retry.")
 
 
 def request_hash(patient_id, doctor_id, slot_time):
