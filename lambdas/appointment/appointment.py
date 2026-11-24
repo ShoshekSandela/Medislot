@@ -334,7 +334,7 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
         # Some older slot records persist a full-state label. Once a seat is
         # released, make those slots bookable again. Never reopen blackout,
         # inactive, or doctor-cancelled slots.
-        reopenable_statuses = {"AVAILABLE", "OPEN", "FULL", "FULL_BOOKED", "FULLY_BOOKED", "BOOKED", "PARTIALLY_BOOKED"}
+        reopenable_statuses = {"AVAILABLE", "FULL", "FULLY_BOOKED", "BOOKED"}
         next_status = "AVAILABLE" if current_status in reopenable_statuses else current_status
 
         marker_put = {
@@ -364,11 +364,18 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
         )
         condition_values = {
             ":new_count": {"N": str(new_booked)},
-            ":slot_id": {"S": str(slot_id)},
             ":version": {"N": str(version)},
             ":one": {"N": "1"},
         }
 
+        # NOTE: slotId is intentionally NOT included in the condition.
+        # The DynamoDB primary key (doctorId + slotTime) uniquely identifies
+        # the slot. Including slotId caused TransactionCanceledException when
+        # the value stored in RDS appointments.slot_id drifted from the
+        # current DynamoDB slotId (e.g. after a slot was regenerated), making
+        # all 5 retries fail and preventing the seat from ever being released.
+        # The version token already provides the compare-and-swap safety needed
+        # to prevent lost updates without requiring slotId equality.
         update = {
             "Update": {
                 "TableName": slots_table.name,
@@ -381,7 +388,7 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
                     "#v = #v + :one"
                 ),
                 "ConditionExpression": (
-                    f"{counter_condition} AND slotId = :slot_id AND #v = :version"
+                    f"{counter_condition} AND #v = :version"
                 ),
                 "ExpressionAttributeNames": {
                     "#booked": "bookedCount",
@@ -764,39 +771,6 @@ def calculate_refund_tier(appointment_start, now, tiers):
     return tiers[-1]
 
 
-def appointment_slot_time(appointment):
-    """Get the exact DynamoDB slot key from the persisted slot identity.
-
-    The slot ID is created by the materializer as
-    doctorId#hospitalId#consultationTypeId#<slotTime>. Using its timestamp
-    avoids rebuilding a key from MySQL DATETIME and accidentally changing
-    its ISO-8601 representation.
-    """
-    slot_id = str(appointment.get("slot_id") or "")
-    if slot_id:
-        candidate = slot_id.rsplit("#", 1)[-1]
-        try:
-            parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=IST)
-            return parsed.astimezone(IST).isoformat(timespec="seconds")
-        except ValueError:
-            logger.warning(
-                "Could not read slotTime from appointment slot_id; using start_at_ist "
-                "appointment_id=%s slot_id=%s",
-                appointment.get("appointment_id"), slot_id,
-            )
-
-    start_at = appointment.get("start_at_ist")
-    if not start_at:
-        raise ApiError(409, "The appointment is missing its slot time")
-    if isinstance(start_at, str):
-        start_at = datetime.fromisoformat(start_at.replace("Z", "+00:00"))
-    if start_at.tzinfo is None:
-        start_at = start_at.replace(tzinfo=IST)
-    return start_at.astimezone(IST).isoformat(timespec="seconds")
-
-
 def cancel_appointment(appointment_id, caller_id, role):
     connection = connect_db()
     already_cancelled = False
@@ -882,9 +856,9 @@ def cancel_appointment(appointment_id, caller_id, role):
     finally:
         connection.close()
 
-    # Use the timestamp persisted in slot_id as the canonical DynamoDB sort
-    # key. MySQL DATETIME is timezone-naive and should not be used to rebuild it.
-    slot_time = appointment_slot_time(appointment)
+    slot_time, _ = normalise_slot_time(
+        appointment["start_at_ist"].replace(tzinfo=IST).isoformat(timespec="seconds")
+    )
     try:
         released_now = release_cancelled_seat_once(
             appointment_id,
@@ -892,6 +866,13 @@ def cancel_appointment(appointment_id, caller_id, role):
             slot_time,
             str(appointment["slot_id"]),
         )
+    except ApiError:
+        # Re-raise domain errors (4xx) directly so the caller receives the
+        # correct status code and message. The original bare `except Exception`
+        # was catching ApiError (a subclass of Exception) and replacing it with
+        # a 503, which the frontend displayed as "MediSlot is temporarily
+        # unavailable" even for recoverable slot-contention errors.
+        raise
     except Exception:
         logger.exception(
             "Appointment cancellation is in RDS but DynamoDB seat release failed appointment_id=%s",
