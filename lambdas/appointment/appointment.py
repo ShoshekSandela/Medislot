@@ -452,6 +452,28 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
         except ClientError as error:
             code = error.response.get("Error", {}).get("Code")
             if code == "TransactionCanceledException":
+                cancellation_reasons = error.response.get("CancellationReasons") or []
+                logger.error(
+                    "SEAT RELEASE TRANSACTION FAILED appointment_id=%s "
+                    "doctor_id=%s slot_time=%s attempt=%s error_code=%s "
+                    "error_message=%s cancellation_reasons=%s",
+                    appointment_id,
+                    doctor_id,
+                    slot_time,
+                    attempt + 1,
+                    code,
+                    error.response.get("Error", {}).get("Message"),
+                    json.dumps(cancellation_reasons, default=str),
+                )
+                # Validation errors are deterministic (for example, an invalid
+                # expression or attribute type); retrying cannot resolve them.
+                if any(
+                    reason.get("Code") == "ValidationError"
+                    for reason in cancellation_reasons
+                    if isinstance(reason, dict)
+                ):
+                    raise
+
                 marker_result = idempotency_table.get_item(
                     Key={"idemKey": marker}, ConsistentRead=True
                 )
