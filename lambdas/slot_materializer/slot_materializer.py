@@ -455,11 +455,10 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None, reques
 
         current_start = window_start
 
-        # Keep the configured gap between appointments. The consultation end
-        # remains the actual appointment end; the next slot starts after buffer.
+        # Generate appointments back-to-back with no additional buffer.
+        # The next slot starts exactly when the current consultation ends.
         consultation_duration = timedelta(minutes=duration_minutes)
-        buffer_minutes = max(0, int(os.environ.get("SLOT_BUFFER_MINUTES", "15")))
-        slot_interval = consultation_duration + timedelta(minutes=buffer_minutes)
+        slot_interval = consultation_duration
 
         while current_start + consultation_duration <= window_end:
 
@@ -476,7 +475,9 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None, reques
             # Do not generate overlapping appointments for the same doctor.
             # This also prevents two consultation types with the same start
             # time from competing for the same DynamoDB primary key.
-            reserved_end = current_end + timedelta(minutes=buffer_minutes)
+            # No buffer is reserved: only the actual consultation interval
+            # is considered occupied.
+            reserved_end = current_end
             overlaps_existing_window = any(
                 current_start < occupied_end and reserved_end > occupied_start
                 for occupied_start, occupied_end in occupied_intervals
