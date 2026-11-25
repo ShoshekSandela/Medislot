@@ -389,16 +389,14 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
             condition_values[":revision"] = {"N": str(revision)}
 
         if is_legacy_map:
-            # Legacy path: bookedCount is a Map. TransactWriteItems cannot
-            # change an attribute's type, so we REMOVE the old Map then SET
-            # the numeric replacement in the same UpdateExpression.
-            # The ConditionExpression omits the counter check because the
-            # attribute type itself proves this is the legacy case.
+            # Replace the legacy Map with a numeric counter atomically.
+            # The existence check and revision condition prevent a stale or
+            # repeated conversion from overwriting a newer seat count.
             update_expr = (
-                "REMOVE #booked "
-                "SET #status = :new_status, #revision = :next_revision"
+                "SET #booked = :new_count, #status = :new_status, "
+                "#revision = :next_revision"
             )
-            cond_expr = revision_condition
+            cond_expr = f"attribute_exists(#booked) AND {revision_condition}"
         else:
             counter_condition = (
                 "attribute_exists(#booked)" if has_counter
@@ -422,11 +420,6 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
             **condition_values,
             ":new_status": {"S": next_status},
         }
-        if is_legacy_map:
-            # :new_count not referenced in REMOVE+SET path — omit to avoid
-            # DynamoDB ValidationError for unused ExpressionAttributeValues keys.
-            update_item_values.pop(":new_count", None)
-
         update = {
             "Update": {
                 "TableName": slots_table.name,
@@ -447,16 +440,6 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
 
         try:
             client.transact_write_items(TransactItems=[update, marker_put])
-            if is_legacy_map:
-                # Repair the numeric counter after the type-change transaction
-                # succeeds. A second atomic write sets bookedCount to the
-                # correct value now that the Map has been removed.
-                slots_table.update_item(
-                    Key={"doctorId": str(doctor_id), "slotTime": slot_time},
-                    UpdateExpression="SET #booked = :new_count",
-                    ExpressionAttributeNames={"#booked": "bookedCount"},
-                    ExpressionAttributeValues={":new_count": new_booked},
-                )
             logger.info(
                 "Cancelled appointment seat released appointment_id=%s doctor_id=%s "
                 "booked_count=%s->%s status=%s->%s released=%s counter_type=%s",
