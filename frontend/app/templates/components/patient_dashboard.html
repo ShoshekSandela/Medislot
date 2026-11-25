@@ -150,7 +150,7 @@
                 <span><strong>Type:</strong> {{ slot.consultation_type_name }}</span>
                 {% if slot.duration_minutes %}<span><strong>Duration:</strong> {{ slot.duration_minutes }} minutes</span>{% endif %}
                 <span><strong>Fee:</strong> ₹{{ slot.consultationFee }}</span>
-                <span><strong>Seats:</strong> {{ slot.freeSeats|int }} available of {{ slot.capacity|int }}</span>
+                <span><strong>Seats:</strong> {{ slot.freeSeats|default(0)|int }} available of {{ slot.capacity|default(1)|int }}</span>
               </div>
               {% if slot.canBook and slot.freeSeats|int > 0 and slot.slotId and slot.slotTime %}
               <form method="post" action="{{ url_for('patient.book_slot') }}" class="patient-book-slot-form" onsubmit="return confirm('Book this consultation slot?');">

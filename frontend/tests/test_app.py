@@ -92,6 +92,7 @@ def test_patient_doctor_detail_uses_one_date_and_shows_booking_button(client):
     assert b'name="start_date"' not in response.data
     assert b'name="end_date"' not in response.data
     assert b"Book this slot" in response.data
+    assert b"1 available of 1" in response.data
     assert b"2026-11-25" in response.data
 
 

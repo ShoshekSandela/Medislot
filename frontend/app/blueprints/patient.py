@@ -205,7 +205,47 @@ def doctor_detail(doctor_id):
             )
             consultation = type_by_id.get(str(consultation_type_id), {})
             slot["consultation_type_name"] = consultation.get("type_name", "Consultation")
-            slot["duration_minutes"] = consultation.get("duration_minutes")
+            slot["duration_minutes"] = (
+                slot.get("duration_minutes") or consultation.get("duration_minutes")
+            )
+
+            # Normalize the public slots API response before rendering. Older
+            # responses (and test/stub responses) may omit capacity even when
+            # freeSeats is present. Prefer the slot's capacity, then the
+            # consultation type's configured capacity, and finally the known
+            # free-seat count as a safe display fallback.
+            try:
+                free_seats = int(slot.get("freeSeats", slot.get("free_seats", 0)) or 0)
+            except (TypeError, ValueError):
+                free_seats = 0
+            try:
+                capacity = int(
+                    slot.get("capacity")
+                    or consultation.get("capacity")
+                    or free_seats
+                    or 1
+                )
+            except (TypeError, ValueError):
+                capacity = max(free_seats, 1)
+
+            slot["freeSeats"] = max(0, free_seats)
+            slot["capacity"] = max(1, capacity)
+
+            status = str(slot.get("status") or "UNAVAILABLE").upper()
+            slot["status"] = status
+            bookable_statuses = {"AVAILABLE", "OPEN", "PARTIALLY_BOOKED"}
+            has_booking_identity = bool(slot.get("slotId") and slot.get("slotTime"))
+            # Respect an explicit backend decision. Only infer canBook for
+            # older API responses where the field is absent.
+            if "canBook" not in slot:
+                slot["canBook"] = (
+                    status in bookable_statuses
+                    and slot["freeSeats"] > 0
+                    and has_booking_identity
+                )
+            else:
+                slot["canBook"] = bool(slot["canBook"]) and has_booking_identity
+
             slot["idempotency_key"] = str(uuid.uuid4())
             display_slots.append(slot)
         try:
