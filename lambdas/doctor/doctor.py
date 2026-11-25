@@ -1719,6 +1719,29 @@ def public_doctor_slots(connection, doctor_id, query_params):
         )
         items.extend(result.get("Items", []))
 
+    # RDS owns appointment state; DynamoDB owns atomic seat allocation.
+    # Do not expose a slot while the two disagree after a partial cancellation.
+    # The cancellation endpoint returns a retryable error until its atomic
+    # DynamoDB seat-release transaction has completed.
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT start_at_ist, COUNT(*) AS booked_count
+            FROM appointments
+            WHERE doctor_id = %s
+              AND status = 'BOOKED'
+              AND start_at_ist >= %s
+              AND start_at_ist < %s
+            GROUP BY start_at_ist
+            """,
+            (int(doctor_id), datetime.combine(start_date, datetime.min.time()),
+             datetime.combine(end_date + timedelta(days=1), datetime.min.time())),
+        )
+        rds_booked_by_time = {
+            str(row["start_at_ist"])[:19].replace(" ", "T"): int(row["booked_count"])
+            for row in cursor.fetchall()
+        }
+
     now_ist = datetime.now(IST).replace(tzinfo=None).isoformat(timespec="seconds")
     slots = []
     for item in items:
@@ -1733,6 +1756,16 @@ def public_doctor_slots(connection, doctor_id, query_params):
             continue
 
         slot_status = str(item.get("status", "")).upper()
+        slot_time_key = str(item.get("slotTime", ""))[:19]
+        rds_booked = rds_booked_by_time.get(slot_time_key, 0)
+        if rds_booked != booked:
+            logger.warning(
+                "Hiding slot while RDS/DynamoDB seat counts differ doctor_id=%s "
+                "slot_time=%s rds_booked=%s dynamodb_booked=%s",
+                doctor_id, slot_time_key, rds_booked, booked,
+            )
+            continue
+
         # Older fully-booked records may retain a full-state status even after
         # cancellation releases a seat. Treat them as bookable when capacity is
         # available, but continue to exclude terminal/blocked states.

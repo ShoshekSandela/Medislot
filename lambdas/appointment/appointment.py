@@ -209,8 +209,8 @@ def reserve_slot(doctor_id, slot_time):
             raise ApiError(409, "This appointment slot is not available")
 
         capacity = int(slot.get("capacity", 1))
-        booked = int(slot.get("bookedCount", 0))
-        version = int(slot.get("version", 1))
+        booked = booked_count_value(slot.get("bookedCount", 0))
+        revision = int(slot.get("seatRevision", 0) or 0)
         if booked >= capacity:
             emit_metric("BookingConflictRetries", retries)
             raise ApiError(409, "This appointment slot is full")
@@ -218,23 +218,21 @@ def reserve_slot(doctor_id, slot_time):
         try:
             slots_table.update_item(
                 Key={"doctorId": str(doctor_id), "slotTime": slot_time},
-                UpdateExpression="SET #booked = #booked + :one, #version = #version + :one",
+                UpdateExpression="SET #booked = :next_booked, #revision = :next_revision",
                 ConditionExpression=(
-                    "#version = :version AND #booked = :booked "
-                    "AND #booked < #capacity AND #status = :available "
-                    "AND #blackout = :false"
+                    "(attribute_not_exists(#revision) OR #revision = :revision) "
+                    "AND #status = :available AND #blackout = :false"
                 ),
                 ExpressionAttributeNames={
                     "#booked": "bookedCount",
-                    "#version": "version",
-                    "#capacity": "capacity",
+                    "#revision": "seatRevision",
                     "#status": "status",
                     "#blackout": "isBlackout",
                 },
                 ExpressionAttributeValues={
-                    ":one": 1,
-                    ":version": version,
-                    ":booked": booked,
+                    ":next_booked": booked + 1,
+                    ":revision": revision,
+                    ":next_revision": revision + 1,
                     ":available": "AVAILABLE",
                     ":false": False,
                 },
@@ -254,19 +252,32 @@ def reserve_slot(doctor_id, slot_time):
 
     emit_metric("BookingConflictRetries", retries)
     latest = get_slot(doctor_id, slot_time)
-    if int(latest.get("bookedCount", 0)) >= int(latest.get("capacity", 1)):
+    if booked_count_value(latest.get("bookedCount", 0)) >= int(latest.get("capacity", 1)):
         raise ApiError(409, "This appointment slot is full")
     raise ApiError(409, "Booking could not be completed due to concurrent requests. Please retry.")
 
 
 def release_reserved_seat(doctor_id, slot_time, slot_id):
-    """Compensate a seat reservation when the RDS appointment insert fails."""
+    """Compensate a failed RDS insert using the same numeric CAS as booking."""
+    slot = get_slot(doctor_id, slot_time)
+    booked = booked_count_value(slot.get("bookedCount", 0))
+    revision = int(slot.get("seatRevision", 0) or 0)
+    if booked <= 0:
+        return
     slots_table.update_item(
         Key={"doctorId": str(doctor_id), "slotTime": slot_time},
-        UpdateExpression="SET #booked = #booked - :one, #version = #version + :one",
-        ConditionExpression="#booked > :zero AND slotId = :slot_id",
-        ExpressionAttributeNames={"#booked": "bookedCount", "#version": "version"},
-        ExpressionAttributeValues={":one": 1, ":zero": 0, ":slot_id": slot_id},
+        UpdateExpression="SET #booked = :next_booked, #revision = :next_revision",
+        ConditionExpression=(
+            "slotId = :slot_id AND "
+            "(attribute_not_exists(#revision) OR #revision = :revision)"
+        ),
+        ExpressionAttributeNames={"#booked": "bookedCount", "#revision": "seatRevision"},
+        ExpressionAttributeValues={
+            ":next_booked": booked - 1,
+            ":next_revision": revision + 1,
+            ":revision": revision,
+            ":slot_id": slot_id,
+        },
     )
 
 
@@ -296,7 +307,7 @@ def booked_count_value(value):
         raise ValueError("Unsupported bookedCount value")
 
 
-def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
+def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, cancellation_type="PATIENT"):
     """Release one cancelled appointment seat exactly once.
 
     Always replace bookedCount with a numeric value. This supports both current
@@ -305,8 +316,8 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
     expression when an older item stores bookedCount as a Map.
 
     The slot update and idempotency marker are committed in one transaction.
-    The slot version is the compare-and-swap token. Every booking and release
-    increments it, preventing lost updates without comparing document counters.
+    seatRevision is a dedicated numeric compare-and-swap token shared by booking
+    and cancellation. It avoids arithmetic on legacy version Map attributes.
     """
     marker = f"SEAT_RELEASE#{appointment_id}"
     client = dynamodb.meta.client
@@ -329,13 +340,16 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
         has_counter = "bookedCount" in slot
         raw_booked = slot.get("bookedCount", 0)
         booked = booked_count_value(raw_booked)
-        version = int(slot.get("version", 1) or 1)
+        revision = int(slot.get("seatRevision", 0) or 0)
         current_status = str(slot.get("status", "AVAILABLE")).upper()
         # Some older slot records persist a full-state label. Once a seat is
         # released, make those slots bookable again. Never reopen blackout,
         # inactive, or doctor-cancelled slots.
         reopenable_statuses = {"AVAILABLE", "FULL", "FULLY_BOOKED", "BOOKED"}
-        next_status = "AVAILABLE" if current_status in reopenable_statuses else current_status
+        if str(cancellation_type).upper() == "DOCTOR":
+            next_status = "SLOT_CANCELLED_BY_DOCTOR"
+        else:
+            next_status = "AVAILABLE" if current_status in reopenable_statuses else current_status
 
         marker_put = {
             "Put": {
@@ -354,19 +368,22 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
         new_booked = max(0, booked - 1)
         released = booked > 0
 
-        # The version is the compare-and-swap token. Every booking and seat
-        # release increments it, so checking the exact version prevents lost
-        # updates without comparing a Map/List counter to a number (or relying
-        # on DynamoDB Map equality semantics).
+        # CAS uses a dedicated numeric attribute. Legacy `version` and
+        # `bookedCount` may be Maps; neither participates in arithmetic.
         counter_condition = (
             "attribute_exists(#booked)" if has_counter
             else "attribute_not_exists(#booked)"
         )
+        revision_condition = (
+            "attribute_not_exists(#revision)" if "seatRevision" not in slot
+            else "#revision = :revision"
+        )
         condition_values = {
             ":new_count": {"N": str(new_booked)},
-            ":version": {"N": str(version)},
-            ":one": {"N": "1"},
+            ":next_revision": {"N": str(revision + 1)},
         }
+        if "seatRevision" in slot:
+            condition_values[":revision"] = {"N": str(revision)}
 
         # NOTE: slotId is intentionally NOT included in the condition.
         # The DynamoDB primary key (doctorId + slotTime) uniquely identifies
@@ -374,8 +391,8 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
         # the value stored in RDS appointments.slot_id drifted from the
         # current DynamoDB slotId (e.g. after a slot was regenerated), making
         # all 5 retries fail and preventing the seat from ever being released.
-        # The version token already provides the compare-and-swap safety needed
-        # to prevent lost updates without requiring slotId equality.
+        # seatRevision provides the compare-and-swap safety needed to prevent
+        # lost updates without requiring slotId equality.
         update = {
             "Update": {
                 "TableName": slots_table.name,
@@ -385,15 +402,15 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id):
                 },
                 "UpdateExpression": (
                     "SET #booked = :new_count, #status = :new_status, "
-                    "#v = #v + :one"
+                    "#revision = :next_revision"
                 ),
                 "ConditionExpression": (
-                    f"{counter_condition} AND #v = :version"
+                    f"{counter_condition} AND {revision_condition}"
                 ),
                 "ExpressionAttributeNames": {
                     "#booked": "bookedCount",
                     "#status": "status",
-                    "#v": "version",
+                    "#revision": "seatRevision",
                 },
                 "ExpressionAttributeValues": {
                     **condition_values,
@@ -893,6 +910,7 @@ def cancel_appointment(appointment_id, caller_id, role):
             int(appointment["doctor_id"]),
             slot_time,
             str(appointment["slot_id"]),
+            cancellation_type=cancellation_type,
         )
     except ApiError:
         # Re-raise domain errors (4xx) directly so the caller receives the
@@ -945,22 +963,19 @@ def cancel_doctor_slot(event, doctor_id):
 
     slot = get_slot(doctor_id, slot_time)
     slot_id = str(slot.get("slotId") or "")
-    version = int(slot.get("version", 1))
     original_status = str(slot.get("status", "AVAILABLE"))
-    already_finalized = original_status == "CANCELLED"
+    already_finalized = original_status == "SLOT_CANCELLED_BY_DOCTOR"
 
     if not already_finalized and original_status != "CANCELLING":
         try:
             slots_table.update_item(
                 Key={"doctorId": str(doctor_id), "slotTime": slot_time},
-                UpdateExpression="SET #status = :cancelling, #version = #version + :one",
-                ConditionExpression="#version = :version AND #status = :available",
-                ExpressionAttributeNames={"#status": "status", "#version": "version"},
+                UpdateExpression="SET #status = :cancelling",
+                ConditionExpression="#status = :available",
+                ExpressionAttributeNames={"#status": "status"},
                 ExpressionAttributeValues={
                     ":cancelling": "CANCELLING",
-                    ":version": version,
                     ":available": original_status,
-                    ":one": 1,
                 },
             )
         except ClientError as error:
@@ -976,9 +991,9 @@ def cancel_doctor_slot(event, doctor_id):
         with connection.cursor() as cursor:
             cursor.execute(
                 """SELECT * FROM appointments
-                   WHERE doctor_id = %s AND slot_id = %s AND status = 'BOOKED'
+                   WHERE doctor_id = %s AND start_at_ist = %s AND status = 'BOOKED'
                    FOR UPDATE""",
-                (doctor_id, slot_id),
+                (doctor_id, mysql_slot_time),
             )
             appointments = cursor.fetchall()
             now = datetime.now(IST).replace(tzinfo=None)
@@ -1008,10 +1023,10 @@ def cancel_doctor_slot(event, doctor_id):
                    FROM appointments a
                    JOIN refund_ledger r ON r.appointment_id = a.appointment_id
                    WHERE a.doctor_id = %s
-                     AND a.slot_id = %s
+                     AND a.start_at_ist = %s
                      AND a.status = 'CANCELLED'
                      AND r.cancellation_type = 'DOCTOR'""",
-                (doctor_id, slot_id),
+                (doctor_id, mysql_slot_time),
             )
             all_cancelled = [
                 {
@@ -1029,11 +1044,11 @@ def cancel_doctor_slot(event, doctor_id):
             try:
                 slots_table.update_item(
                     Key={"doctorId": str(doctor_id), "slotTime": slot_time},
-                    UpdateExpression="SET #status = :status, #version = #version + :one",
+                    UpdateExpression="SET #status = :status",
                     ConditionExpression="#status = :cancelling",
-                    ExpressionAttributeNames={"#status": "status", "#version": "version"},
+                    ExpressionAttributeNames={"#status": "status"},
                     ExpressionAttributeValues={
-                        ":status": original_status, ":cancelling": "CANCELLING", ":one": 1,
+                        ":status": original_status, ":cancelling": "CANCELLING",
                     },
                 )
             except Exception:
@@ -1047,24 +1062,24 @@ def cancel_doctor_slot(event, doctor_id):
         if already_finalized:
             slots_table.update_item(
                 Key={"doctorId": str(doctor_id), "slotTime": slot_time},
-                UpdateExpression="SET #booked = :zero, #version = #version + :one",
+                UpdateExpression="SET #booked = :zero",
                 ConditionExpression="#status = :cancelled",
                 ExpressionAttributeNames={
-                    "#status": "status", "#booked": "bookedCount", "#version": "version",
+                    "#status": "status", "#booked": "bookedCount",
                 },
-                ExpressionAttributeValues={":cancelled": "CANCELLED", ":zero": 0, ":one": 1},
+                ExpressionAttributeValues={":cancelled": "SLOT_CANCELLED_BY_DOCTOR", ":zero": 0},
             )
         else:
             slots_table.update_item(
                 Key={"doctorId": str(doctor_id), "slotTime": slot_time},
-                UpdateExpression="SET #status = :cancelled, #booked = :zero, #version = #version + :one",
+                UpdateExpression="SET #status = :cancelled, #booked = :zero",
                 ConditionExpression="#status = :cancelling",
                 ExpressionAttributeNames={
-                    "#status": "status", "#booked": "bookedCount", "#version": "version",
+                    "#status": "status", "#booked": "bookedCount",
                 },
                 ExpressionAttributeValues={
-                    ":cancelled": "CANCELLED", ":cancelling": "CANCELLING",
-                    ":zero": 0, ":one": 1,
+                    ":cancelled": "SLOT_CANCELLED_BY_DOCTOR", ":cancelling": "CANCELLING",
+                    ":zero": 0,
                 },
             )
     except Exception:

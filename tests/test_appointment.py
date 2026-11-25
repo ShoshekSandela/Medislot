@@ -34,6 +34,7 @@ class FakeSlotTable:
             "capacity": capacity,
             "bookedCount": 0,
             "version": 1,
+            "seatRevision": 0,
             "status": "AVAILABLE",
             "isBlackout": False,
         }
@@ -53,8 +54,7 @@ class FakeSlotTable:
         with self.lock:
             values = ExpressionAttributeValues
             if (
-                self.item["version"] != values[":version"]
-                or self.item["bookedCount"] != values[":booked"]
+                self.item.get("seatRevision", 0) != values[":revision"]
                 or self.item["bookedCount"] >= self.item["capacity"]
                 or self.item["status"] != values[":available"]
                 or self.item["isBlackout"] != values[":false"]
@@ -63,8 +63,8 @@ class FakeSlotTable:
                     {"Error": {"Code": "ConditionalCheckFailedException", "Message": "conflict"}},
                     "UpdateItem",
                 )
-            self.item["bookedCount"] += values[":one"]
-            self.item["version"] += values[":one"]
+            self.item["bookedCount"] = values[":next_booked"]
+            self.item["seatRevision"] = values[":next_revision"]
             return {"Attributes": dict(self.item)}
 
 
@@ -194,7 +194,7 @@ def test_cancelled_seat_release_converts_legacy_map_counter_once(monkeypatch):
                 "slotId": "42#7#3#2026-12-01T09:00:00+05:30",
                 "bookedCount": {"appointment-1": True, "appointment-2": True},
                 "status": "FULLY_BOOKED",
-                "version": 2,
+                "version": {"legacy": 2},
             }
 
         def get_item(self, Key, ConsistentRead=False):
@@ -217,19 +217,25 @@ def test_cancelled_seat_release_converts_legacy_map_counter_once(monkeypatch):
 
         def transact_write_items(self, TransactItems):
             update = TransactItems[0]["Update"]
-            # DynamoDB cannot compare a legacy Map counter with a number.
-            # The production transaction must use existence + version CAS only.
+            # Neither legacy Map counter nor legacy version is used in arithmetic.
             assert ">" not in update["ConditionExpression"]
+            assert "#v" not in update["UpdateExpression"]
             values = update["ExpressionAttributeValues"]
             assert update["ConditionExpression"].startswith("attribute_exists(#booked)")
-            if self.slots.item["version"] != int(values[":version"]["N"]):
+            if "seatRevision" in self.slots.item:
+                if self.slots.item["seatRevision"] != int(values[":revision"]["N"]):
+                    raise ClientError(
+                        {"Error": {"Code": "TransactionCanceledException", "Message": "condition"}},
+                        "TransactWriteItems",
+                    )
+            elif "attribute_not_exists(#revision)" not in update["ConditionExpression"]:
                 raise ClientError(
                     {"Error": {"Code": "TransactionCanceledException", "Message": "condition"}},
                     "TransactWriteItems",
                 )
             self.slots.item["bookedCount"] = int(values[":new_count"]["N"])
             self.slots.item["status"] = update["ExpressionAttributeValues"][":new_status"]["S"]
-            self.slots.item["version"] += 1
+            self.slots.item["seatRevision"] = int(values[":next_revision"]["N"])
             put = TransactItems[1]["Put"]["Item"]
             key = put["idemKey"]["S"]
             if key in self.idem.items:
@@ -256,6 +262,8 @@ def test_cancelled_seat_release_converts_legacy_map_counter_once(monkeypatch):
     assert released is True
     assert slots.item["bookedCount"] == 1
     assert slots.item["status"] == "AVAILABLE"
+    assert slots.item["version"] == {"legacy": 2}
+    assert slots.item["seatRevision"] == 1
 
     retried = appointment.release_cancelled_seat_once(
         77, 42, slots.item["slotTime"], slots.item["slotId"]
@@ -287,3 +295,56 @@ def test_cancellation_slot_time_falls_back_to_mysql_start_time():
     assert appointment.appointment_slot_time(appointment_row) == (
         "2026-12-01T09:00:00+05:30"
     )
+
+
+def test_doctor_cancellation_releases_count_but_keeps_slot_blocked(monkeypatch):
+    class SlotTable:
+        name = "slots"
+        def __init__(self):
+            self.item = {
+                "doctorId": "42",
+                "slotTime": "2026-12-01T09:00:00+05:30",
+                "bookedCount": 2,
+                "capacity": 3,
+                "status": "PARTIALLY_BOOKED",
+            }
+        def get_item(self, Key, ConsistentRead=False):
+            return {"Item": dict(self.item)}
+
+    class IdemTable:
+        name = "idempotency"
+        def __init__(self): self.items = {}
+        def get_item(self, Key, ConsistentRead=False):
+            item = self.items.get(Key["idemKey"])
+            return {"Item": dict(item)} if item else {}
+
+    class Client:
+        def __init__(self, slots, idem): self.slots, self.idem = slots, idem
+        def transact_write_items(self, TransactItems):
+            update, put = TransactItems
+            vals = update["Update"]["ExpressionAttributeValues"]
+            self.slots.item["bookedCount"] = int(vals[":new_count"]["N"])
+            self.slots.item["status"] = vals[":new_status"]["S"]
+            self.slots.item["seatRevision"] = int(vals[":next_revision"]["N"])
+            key = put["Put"]["Item"]["idemKey"]["S"]
+            self.idem.items[key] = {"idemKey": key}
+
+    slots, idem = SlotTable(), IdemTable()
+    client = Client(slots, idem)
+    monkeypatch.setattr(appointment, "slots_table", slots)
+    monkeypatch.setattr(appointment, "idempotency_table", idem)
+    monkeypatch.setattr(
+        appointment, "dynamodb",
+        type("DynamoResource", (), {"meta": type("Meta", (), {"client": client})()})(),
+    )
+
+    assert appointment.release_cancelled_seat_once(
+        88, 42, slots.item["slotTime"], "slot", cancellation_type="DOCTOR"
+    ) is True
+    assert slots.item["bookedCount"] == 1
+    assert slots.item["status"] == "SLOT_CANCELLED_BY_DOCTOR"
+    assert appointment.release_cancelled_seat_once(
+        88, 42, slots.item["slotTime"], "slot", cancellation_type="DOCTOR"
+    ) is False
+    assert slots.item["bookedCount"] == 1
+    assert slots.item["status"] == "SLOT_CANCELLED_BY_DOCTOR"

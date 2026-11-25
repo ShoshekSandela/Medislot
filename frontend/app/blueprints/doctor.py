@@ -1982,10 +1982,12 @@ def schedule():
         for appt in rds_appointments:
 
             sid = str(appt.get("slot_id") or "")
-
             if sid:
-
                 rds_booked_by_slot[sid] = rds_booked_by_slot.get(sid, 0) + 1
+            start_value = appt.get("start_at_ist")
+            if start_value:
+                start_key = str(start_value)[:19].replace(" ", "T")
+                rds_booked_by_slot[start_key] = rds_booked_by_slot.get(start_key, 0) + 1
 
 
 
@@ -2035,14 +2037,17 @@ def schedule():
             # Prefer the RDS-derived count (live, authoritative) over the
             # DynamoDB counter (eventually consistent, may lag cancellations).
             slot_id_key = str(slot.get("slotId") or "")
+            slot_time_key = str(slot.get("slotTime") or slot_start or "")[:19].replace(" ", "T")
 
-            if slot_id_key in rds_booked_by_slot:
-
-                booked = rds_booked_by_slot[slot_id_key]
-
-            else:
-
-                booked = booked_count_value(slot.get("bookedCount", 0))
+            # Every slot gets an RDS-derived live appointment count, including
+            # zero. Falling back to DynamoDB when the RDS count is zero leaves
+            # cancelled seats looking booked after a successful RDS commit.
+            dynamodb_booked = booked_count_value(slot.get("bookedCount", 0))
+            booked = rds_booked_by_slot.get(
+                slot_id_key,
+                rds_booked_by_slot.get(slot_time_key, 0),
+            )
+            slot["capacitySyncPending"] = dynamodb_booked != booked
 
             # Write the reconciled count back so the template reads
             # the same corrected value from s.bookedCount.
@@ -2122,7 +2127,15 @@ def schedule():
 
 
 
-            if overlapping_blackout:
+            if str(slot.get("status", "")).upper() in {
+                "SLOT_CANCELLED_BY_DOCTOR", "CANCELLED"
+            }:
+                slot["status"] = "SLOT_CANCELLED_BY_DOCTOR"
+
+            elif slot.get("capacitySyncPending"):
+                slot["status"] = "CAPACITY_SYNC_PENDING"
+
+            elif overlapping_blackout:
 
                 slot["status"] = "BLACKOUT"
 
@@ -2248,15 +2261,10 @@ def schedule():
 
 
 
-    day_slots = (
-
-        day_data.get("slots", [])
-
-        if isinstance(day_data, dict)
-
-        else []
-
-    )
+    day_slots = [
+        item for item in schedule_items.get(day, [])
+        if item.get("itemType") == "SLOT"
+    ]
 
 
 
@@ -2296,7 +2304,12 @@ def schedule():
 
 
 
-        if slot.get("isBlackout", False):
+        if str(slot.get("status", "")).upper() in {
+            "SLOT_CANCELLED_BY_DOCTOR", "CANCELLED", "CAPACITY_SYNC_PENDING"
+        }:
+            blackout_slot_count += 1
+
+        elif slot.get("isBlackout", False):
 
             blackout_slot_count += 1
 

@@ -23,7 +23,7 @@
 .schedule-slot-card{min-width:0;background:var(--surface2);border:1px solid var(--line);border-left:4px solid #0cc9a5;border-radius:12px;padding:20px 19px;box-shadow:0 4px 14px rgba(0,0,0,.08)}
 .schedule-slot-card.slot-open{border-left-color:#0cc9a5}
 .schedule-slot-card.slot-partial{border-left-color:#e8ad35}
-.schedule-slot-card.slot-full{border-left-color:#e15d67}
+.schedule-slot-card.slot-full{border-left-color:#e15d67}\n.schedule-slot-card.slot-cancelled{border-left-color:#a855f7;opacity:.9}\n.schedule-slot-card.sync-pending{border-left-color:#e8ad35;opacity:.9}\n.sync-pending .schedule-status{background:rgba(232,173,53,.12);color:#e8ad35;border-color:rgba(232,173,53,.3)}\n.slot-cancelled .schedule-status{background:rgba(168,85,247,.12);color:#c084fc;border-color:rgba(168,85,247,.3)}
 .schedule-slot-card.blackout{border-left-color:#758195;opacity:.78;background:var(--surface2)}
 .schedule-slot-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
 .schedule-slot-top h3{font-size:17px;margin:0;letter-spacing:-.02em}
@@ -44,7 +44,7 @@
 .schedule-week-day{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:13px;min-height:180px}
 .schedule-week-day h3{font-size:12px;margin:0 0 12px}
 .week-slot{display:grid;gap:5px;padding:9px;margin-bottom:8px;border-radius:8px;background:var(--surface2);border-left:3px solid #0cc9a5;font-size:10px}
-.week-slot small,.week-slot span{color:var(--muted)}.week-slot.slot-partial{border-left-color:#e8ad35}.week-slot.slot-full{border-left-color:#e15d67}.week-slot.blackout{border-left-color:#758195}
+.week-slot small,.week-slot span{color:var(--muted)}.week-slot.slot-partial{border-left-color:#e8ad35}.week-slot.slot-full{border-left-color:#e15d67}.week-slot.slot-cancelled{border-left-color:#a855f7}.week-slot.sync-pending{border-left-color:#e8ad35}.week-slot.blackout{border-left-color:#758195}
 .profile-photo-avatar img{width:100%;height:100%;object-fit:cover;display:block;border-radius:50%}
 .profile-photo-avatar .avatar-fallback{width:100%;height:100%;align-items:center;justify-content:center}
 @media(max-width:1050px){.schedule-card-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.schedule-week-modern{grid-template-columns:repeat(4,minmax(145px,1fr))}}

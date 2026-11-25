@@ -305,7 +305,10 @@ def create_slot(
                 ),
                 ConditionExpression=(
                     "slotId = :slot_id AND "
-                    "(attribute_not_exists(bookedCount) OR bookedCount = :zero)"
+                    "(attribute_not_exists(bookedCount) OR bookedCount = :zero) "
+                    "AND #status <> :doctor_cancelled "
+                    "AND #status <> :legacy_cancelled "
+                    "AND #status <> :cancelling"
                 ),
                 ExpressionAttributeNames={
                     "#status": "status",
@@ -328,6 +331,9 @@ def create_slot(
                     ":timezone": "Asia/Kolkata",
                     ":zero": 0,
                     ":slot_id": slot_id,
+                    ":doctor_cancelled": "SLOT_CANCELLED_BY_DOCTOR",
+                    ":legacy_cancelled": "CANCELLED",
+                    ":cancelling": "CANCELLING",
                 },
             )
             logger.debug("STEP 4C: Existing unbooked slot metadata refreshed slot_id=%s", slot_id)
@@ -517,7 +523,10 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
                     },
                     UpdateExpression="SET #status = :inactive, #is_blackout = :false",
                     ConditionExpression=(
-                        "attribute_not_exists(bookedCount) OR bookedCount = :zero"
+                        "(attribute_not_exists(bookedCount) OR bookedCount = :zero) "
+                        "AND #status <> :doctor_cancelled "
+                        "AND #status <> :legacy_cancelled "
+                        "AND #status <> :cancelling"
                     ),
                     ExpressionAttributeNames={
                         "#status": "status",
@@ -527,6 +536,9 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
                         ":inactive": "INACTIVE",
                         ":false": False,
                         ":zero": 0,
+                        ":doctor_cancelled": "SLOT_CANCELLED_BY_DOCTOR",
+                        ":legacy_cancelled": "CANCELLED",
+                        ":cancelling": "CANCELLING",
                     },
                 )
                 results["deactivated"] += 1
