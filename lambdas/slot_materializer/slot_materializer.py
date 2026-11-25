@@ -354,11 +354,14 @@ def create_slot(
         return "duplicate_blackout" if blackout else "duplicate"
 
 
-def materialize_day(connection, slots_table, target_date, doctor_id=None):
+def materialize_day(connection, slots_table, target_date, doctor_id=None, requested_weekdays=None):
 
     # Python: Monday=0, Sunday=6.
     # Database: Sunday=0, Saturday=6.
     day_of_week = (target_date.weekday() + 1) % 7
+    if requested_weekdays is not None and day_of_week not in requested_weekdays:
+        logger.info("Skipping date outside requested weekdays date=%s day_of_week=%s", target_date, day_of_week)
+        return {"created": 0, "duplicates": 0, "blackout_slots": 0, "deactivated": 0, "availability_records": 0}
 
     availability_records = get_availability(
         connection,
@@ -433,10 +436,11 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
 
         current_start = window_start
 
-        # Each consultation starts immediately after the previous one ends.
-        # There is deliberately no additional buffer between appointments.
+        # Keep the configured gap between appointments. The consultation end
+        # remains the actual appointment end; the next slot starts after buffer.
         consultation_duration = timedelta(minutes=duration_minutes)
-        slot_interval = consultation_duration
+        buffer_minutes = max(0, int(os.environ.get("SLOT_BUFFER_MINUTES", "15")))
+        slot_interval = consultation_duration + timedelta(minutes=buffer_minutes)
 
         while current_start + consultation_duration <= window_end:
 
@@ -473,7 +477,6 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None):
                 if result == "duplicate_blackout":
                     results["blackout_slots"] += 1
 
-            # Advance by consultation duration only: no 15-minute buffer.
             current_start += slot_interval
 
     logger.info(
@@ -587,6 +590,16 @@ def lambda_handler(event, context):
     logger.info("STEP 2B: DynamoDB slots table configured table_name=%s", table_name)
     slots_table = dynamodb.Table(table_name)
     doctor_id = event.get("doctor_id")
+    requested_weekdays = event.get("day_of_week")
+    if requested_weekdays is not None:
+        try:
+            if not isinstance(requested_weekdays, list):
+                requested_weekdays = [requested_weekdays]
+            requested_weekdays = sorted({int(day) for day in requested_weekdays})
+            if not requested_weekdays or any(day < 0 or day > 6 for day in requested_weekdays):
+                raise ValueError()
+        except (TypeError, ValueError):
+            return {"statusCode": 400, "body": json.dumps({"message": "day_of_week must contain values from 0 (Sunday) to 6 (Saturday)"})}
     if doctor_id is not None:
         try:
             doctor_id = int(doctor_id)
@@ -629,7 +642,8 @@ def lambda_handler(event, context):
                 connection,
                 slots_table,
                 target_date,
-                doctor_id=doctor_id
+                doctor_id=doctor_id,
+                requested_weekdays=requested_weekdays
             )
 
             for key in total_results:

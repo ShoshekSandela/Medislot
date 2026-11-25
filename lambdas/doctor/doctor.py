@@ -209,8 +209,8 @@ def doctor_id_from_auth(connection, profile_id):
 
 
 @log_execution
-def refresh_generated_slots(doctor_id, start_date=None, days=30):
-    """Regenerate slots for this doctor."""
+def refresh_generated_slots(doctor_id, start_date=None, days=30, day_of_week=None):
+    """Regenerate slots for this doctor, optionally only on selected weekdays."""
 
     function_name = os.environ.get(
         "SLOT_MATERIALIZER_FUNCTION_NAME"
@@ -233,6 +233,9 @@ def refresh_generated_slots(doctor_id, start_date=None, days=30):
 
     if start_date:
         payload["start_date"] = str(start_date)[:10]
+    if day_of_week is not None:
+        weekdays = day_of_week if isinstance(day_of_week, (list, tuple, set)) else [day_of_week]
+        payload["day_of_week"] = sorted({int(day) for day in weekdays})
 
     logger.info(
         "Materializer step 1/4: invoking function=%s doctor_id=%s",
@@ -1198,7 +1201,7 @@ def availability(connection, doctor_id, method, data, item_id=None):
                 "Availability create step 7/7: starting synchronous slot refresh doctor_id=%s start_date=%s days=30",
                 doctor_id, effective_start,
             )
-            generation = refresh_generated_slots(doctor_id, effective_start, 30)
+            generation = refresh_generated_slots(doctor_id, effective_start, 30, day_of_week=day)
             logger.info("Availability slot refresh result: %s", generation.get("status"))
             return response(201, {
                 "message": "Availability created",
@@ -1284,12 +1287,28 @@ def availability(connection, doctor_id, method, data, item_id=None):
             logger.info("Availability update step 4/6: committing RDS transaction")
             connection.commit()
             logger.info("Availability update step 5/6: invoking slot materializer")
-            generation = refresh_generated_slots(doctor_id, datetime.now(IST).date().isoformat(), 30)
+            generation = refresh_generated_slots(
+                doctor_id, datetime.now(IST).date().isoformat(), 30,
+                day_of_week={int(old_row["day_of_week"]), int(merged["day_of_week"])}
+            )
             logger.info("Availability update step 6/6: materializer status=%s", generation.get("status"))
             return response(200, {"message": "Availability updated", "slot_generation": generation})
 
         if method == "DELETE" and item_id:
-            logger.info("Availability delete step 1/4: deleting availability_id=%s for doctor_id=%s", item_id, doctor_id)
+            logger.info("Availability delete step 1/5: loading availability weekday")
+            cursor.execute(
+                """
+                SELECT day_of_week
+                FROM doctor_availability
+                WHERE availability_id = %s AND doctor_id = %s
+                """,
+                (item_id, doctor_id),
+            )
+            old_row = cursor.fetchone()
+            if not old_row:
+                return response(404, {"message": "Availability not found"})
+
+            logger.info("Availability delete step 2/5: deleting availability_id=%s for doctor_id=%s", item_id, doctor_id)
             cursor.execute(
                 """
                 DELETE FROM doctor_availability
@@ -1301,11 +1320,14 @@ def availability(connection, doctor_id, method, data, item_id=None):
             if deleted_rows == 0:
                 connection.rollback()
                 return response(404, {"message": "Availability not found"})
-            logger.info("Availability delete step 2/4: committing RDS transaction")
+            logger.info("Availability delete step 3/5: committing RDS transaction")
             connection.commit()
-            logger.info("Availability delete step 3/4: invoking slot materializer")
-            generation = refresh_generated_slots(doctor_id, datetime.now(IST).date().isoformat(), 30)
-            logger.info("Availability delete step 4/4: materializer status=%s", generation.get("status"))
+            logger.info("Availability delete step 4/5: invoking slot materializer")
+            generation = refresh_generated_slots(
+                doctor_id, datetime.now(IST).date().isoformat(), 30,
+                day_of_week=int(old_row["day_of_week"])
+            )
+            logger.info("Availability delete step 5/5: materializer status=%s", generation.get("status"))
             return response(200, {"message": "Availability deleted", "slot_generation": generation})
 
     return response(405, {"message": "Method not allowed"})

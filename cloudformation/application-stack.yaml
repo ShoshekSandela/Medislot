@@ -288,7 +288,7 @@ Resources:
         S3Bucket: !Ref LambdaCodeBucket
         S3Key: !Ref LambdaCodeKey
       MemorySize: 512
-      Timeout: 60
+      Timeout: 300
       VpcConfig:
         SubnetIds:
           - !Ref PrivateSubnetAId

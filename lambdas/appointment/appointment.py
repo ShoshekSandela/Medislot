@@ -322,22 +322,6 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
     marker = f"SEAT_RELEASE#{appointment_id}"
     client = dynamodb.meta.client
 
-    # DynamoDB's table key is doctorId (String) + slotTime (String).
-    # Normalize both values before using either the resource or low-level API.
-    doctor_id = str(doctor_id).strip()
-    slot_time = str(slot_time).strip()
-    if not doctor_id or not slot_time:
-        raise ApiError(400, "Invalid doctor or appointment slot reference")
-
-    logger.info(
-        "Seat release transaction target appointment_id=%s slots_table=%s "
-        "idempotency_table=%s doctor_id=%r doctor_id_type=%s "
-        "slot_time=%r slot_time_type=%s region=%s",
-        appointment_id, slots_table.name, idempotency_table.name,
-        doctor_id, type(doctor_id).__name__, slot_time,
-        type(slot_time).__name__, REGION,
-    )
-
     for attempt in range(5):
         marker_result = idempotency_table.get_item(
             Key={"idemKey": marker}, ConsistentRead=True
@@ -456,18 +440,6 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
             }
         }
 
-        # Log the exact low-level key immediately before the transaction. This
-        # is intentionally limited to identifiers and table names (no patient
-        # data, credentials, or payment details).
-        logger.info(
-            "Submitting seat release transaction appointment_id=%s "
-            "update_table=%s update_key=%s marker_table=%s",
-            appointment_id,
-            update["Update"]["TableName"],
-            update["Update"]["Key"],
-            marker_put["Put"]["TableName"],
-        )
-
         try:
             client.transact_write_items(TransactItems=[update, marker_put])
             logger.info(
@@ -479,37 +451,17 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
             return released
         except ClientError as error:
             code = error.response.get("Error", {}).get("Code")
-            reasons = error.response.get("CancellationReasons") or []
-            logger.error(
-                "Seat release transaction failed appointment_id=%s "
-                "error_code=%s error_message=%s cancellation_reasons=%s "
-                "update_table=%s update_key=%s marker_table=%s",
-                appointment_id,
-                code,
-                error.response.get("Error", {}).get("Message"),
-                json.dumps(reasons, default=str),
-                update["Update"]["TableName"],
-                update["Update"]["Key"],
-                marker_put["Put"]["TableName"],
-            )
-
             if code == "TransactionCanceledException":
                 marker_result = idempotency_table.get_item(
                     Key={"idemKey": marker}, ConsistentRead=True
                 )
                 if marker_result.get("Item"):
                     return False
-
-                # ValidationError is a malformed request/schema problem, not
-                # a concurrency conflict. Retrying it cannot repair the request.
-                if any(reason.get("Code") == "ValidationError" for reason in reasons):
-                    raise
-
                 if attempt < 4:
                     logger.info(
-                        "Retrying seat release after transaction conflict "
-                        "appointment_id=%s attempt=%s cancellation_reasons=%s",
-                        appointment_id, attempt + 1, json.dumps(reasons, default=str),
+                        "Retrying seat release after concurrent slot update "
+                        "appointment_id=%s attempt=%s",
+                        appointment_id, attempt + 1,
                     )
                     continue
             raise
