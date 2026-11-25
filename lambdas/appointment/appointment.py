@@ -19,6 +19,7 @@ import logging
 import os
 import random
 import time
+import botocore
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
@@ -501,6 +502,13 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
                 sorted(transaction_key.keys()),
                 type(canonical_doctor_id).__name__,
                 type(canonical_slot_time).__name__,
+            )
+            # TEMPORARY DIAGNOSTIC: remove after the ValidationError is found.
+            logger.info(
+                "Seat release transaction payload appointment_id=%s botocore=%s payload=%s",
+                appointment_id,
+                botocore.__version__,
+                json.dumps([update, marker_put], default=str),
             )
             client.transact_write_items(TransactItems=[update, marker_put])
             logger.info(
@@ -1301,6 +1309,75 @@ def list_appointments(caller_id, role):
         connection.close()
 
 
+def retry_seat_release(appointment_id, caller_id, role):
+    """Re-run the DynamoDB seat release for one patient-cancelled appointment.
+
+    The RDS cancellation commits before the DynamoDB seat release, so a failed
+    release leaves the appointment CANCELLED_BY_PATIENT while the slot still
+    counts it as booked. The patient UI no longer offers Cancel for that
+    appointment, so this endpoint is the repair path.
+
+    Safe to repeat: release_cancelled_seat_once() is guarded by the
+    SEAT_RELEASE#<appointment_id> marker, which is written in the same
+    transaction as the counter change. A seat is therefore freed at most once.
+    """
+    if role not in {"patient", "doctor"}:
+        raise ApiError(403, "Only the patient or treating doctor can retry a seat release")
+
+    connection = connect_db()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT appointment_id, patient_id, doctor_id, slot_id,
+                          start_at_ist, status
+                   FROM appointments WHERE appointment_id = %s""",
+                (appointment_id,),
+            )
+            appointment = cursor.fetchone()
+    finally:
+        connection.close()
+
+    if not appointment:
+        raise ApiError(404, "Appointment was not found")
+    owner_id = appointment["patient_id"] if role == "patient" else appointment["doctor_id"]
+    if int(owner_id) != caller_id:
+        raise ApiError(404, "Appointment was not found")
+    if str(appointment["status"]).upper() != "CANCELLED_BY_PATIENT":
+        raise ApiError(409, "Only patient-cancelled appointments need a seat release retry")
+
+    doctor_id = int(appointment["doctor_id"])
+    slot_id = str(appointment["slot_id"])
+    slot_time = appointment_slot_time(appointment)
+    try:
+        released = release_cancelled_seat_once(
+            appointment_id,
+            doctor_id,
+            slot_time,
+            slot_id,
+            cancellation_type="PATIENT",
+        )
+    except ApiError:
+        raise
+    except Exception:
+        logger.exception("Seat release retry failed appointment_id=%s", appointment_id)
+        raise ApiError(503, "Slot capacity could not be updated. Retry shortly.")
+
+    if released:
+        # Wake the waitlist exactly as the original cancellation would have.
+        publish_event("SlotSeatFreed", {
+            "slot_id": slot_id,
+            "doctor_id": doctor_id,
+            "slot_time": slot_time,
+            "appointment_id": appointment_id,
+            "freed_seats": 1,
+        })
+    return {
+        "appointment_id": appointment_id,
+        "seat_released_now": released,
+        "already_released": not released,
+    }
+
+
 def appointment_detail(appointment_id, caller_id, role):
     if role == "patient":
         where, value = "a.patient_id = %s", caller_id
@@ -1441,6 +1518,18 @@ def lambda_handler(event, context):
                     "message": "Appointment retrieved successfully",
                     "appointment": appointment_detail(appointment_id, caller_id, role),
                 })
+
+        if len(parts) == 3 and parts[0] == "appointments" and parts[2] == "retry-seat-release" and method == "POST":
+            try:
+                appointment_id = int(parts[1])
+            except ValueError:
+                raise ApiError(400, "appointment_id must be an integer")
+            if appointment_id <= 0:
+                raise ApiError(400, "appointment_id must be positive")
+            return response(200, {
+                "message": "Seat release checked",
+                "result": retry_seat_release(appointment_id, caller_id, role),
+            })
 
         if len(parts) == 3 and parts[0] == "appointments" and parts[2] == "cancel" and method == "POST":
             try:
