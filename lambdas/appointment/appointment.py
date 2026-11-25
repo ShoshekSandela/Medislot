@@ -26,7 +26,6 @@ import boto3
 import pymysql
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
-from boto3.dynamodb.types import TypeSerializer
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -51,9 +50,6 @@ slots_table = dynamodb.Table(os.environ.get("SLOTS_TABLE_NAME", "medislot-dev-sl
 idempotency_table = dynamodb.Table(
     os.environ.get("IDEMPOTENCY_TABLE_NAME", "medislot-dev-idempotency")
 )
-
-# Serializes canonical DynamoDB key values for low-level transactions.
-_dynamodb_serializer = TypeSerializer()
 
 
 class ApiError(Exception):
@@ -372,12 +368,15 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
         new_booked = max(0, booked - 1)
         released = booked > 0
 
+        # Detect whether the stored bookedCount is a legacy DynamoDB Map/List.
+        # TransactWriteItems rejects type changes (Map -> Number) with a
+        # ValidationError cancellation reason. For those items we must REMOVE
+        # the old Map attribute and SET the new numeric value in one expression.
+        # Regular update_item allows type changes but transactional writes do not.
+        is_legacy_map = isinstance(raw_booked, dict) or isinstance(raw_booked, list)
+
         # CAS uses a dedicated numeric attribute. Legacy `version` and
         # `bookedCount` may be Maps; neither participates in arithmetic.
-        counter_condition = (
-            "attribute_exists(#booked)" if has_counter
-            else "attribute_not_exists(#booked)"
-        )
         revision_condition = (
             "attribute_not_exists(#revision)" if "seatRevision" not in slot
             else "#revision = :revision"
@@ -389,6 +388,28 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
         if "seatRevision" in slot:
             condition_values[":revision"] = {"N": str(revision)}
 
+        if is_legacy_map:
+            # Legacy path: bookedCount is a Map. TransactWriteItems cannot
+            # change an attribute's type, so we REMOVE the old Map then SET
+            # the numeric replacement in the same UpdateExpression.
+            # The ConditionExpression omits the counter check because the
+            # attribute type itself proves this is the legacy case.
+            update_expr = (
+                "REMOVE #booked "
+                "SET #status = :new_status, #revision = :next_revision"
+            )
+            cond_expr = revision_condition
+        else:
+            counter_condition = (
+                "attribute_exists(#booked)" if has_counter
+                else "attribute_not_exists(#booked)"
+            )
+            update_expr = (
+                "SET #booked = :new_count, #status = :new_status, "
+                "#revision = :next_revision"
+            )
+            cond_expr = f"{counter_condition} AND {revision_condition}"
+
         # NOTE: slotId is intentionally NOT included in the condition.
         # The DynamoDB primary key (doctorId + slotTime) uniquely identifies
         # the slot. Including slotId caused TransactionCanceledException when
@@ -397,52 +418,45 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
         # all 5 retries fail and preventing the seat from ever being released.
         # seatRevision provides the compare-and-swap safety needed to prevent
         # lost updates without requiring slotId equality.
+        update_item_values = {
+            **condition_values,
+            ":new_status": {"S": next_status},
+        }
+        if is_legacy_map:
+            # :new_count not referenced in REMOVE+SET path — omit to avoid
+            # DynamoDB ValidationError for unused ExpressionAttributeValues keys.
+            update_item_values.pop(":new_count", None)
+
         update = {
             "Update": {
                 "TableName": slots_table.name,
-                # Use the canonical key values returned by the strongly-consistent
-                # GetItem, rather than reconstructing them from appointment fields.
-                # TypeSerializer guarantees the low-level AttributeValue shape matches
-                # the stored key types (String in the current slots-table schema).
                 "Key": {
-                    "doctorId": _dynamodb_serializer.serialize(slot["doctorId"]),
-                    "slotTime": _dynamodb_serializer.serialize(slot["slotTime"]),
+                    "doctorId": {"S": str(doctor_id)},
+                    "slotTime": {"S": slot_time},
                 },
-                "UpdateExpression": (
-                    "SET #booked = :new_count, #status = :new_status, "
-                    "#revision = :next_revision"
-                ),
-                "ConditionExpression": (
-                    f"{counter_condition} AND {revision_condition}"
-                ),
+                "UpdateExpression": update_expr,
+                "ConditionExpression": cond_expr,
                 "ExpressionAttributeNames": {
                     "#booked": "bookedCount",
                     "#status": "status",
                     "#revision": "seatRevision",
                 },
-                "ExpressionAttributeValues": {
-                    **condition_values,
-                    ":new_status": {"S": next_status},
-                },
+                "ExpressionAttributeValues": update_item_values,
             }
         }
 
         try:
-            logger.info(
-                "SEAT RELEASE TRANSACTION REQUEST "
-                "appointment_id=%r doctor_id=%r doctor_id_type=%s "
-                "slot_time=%r slot_time_type=%s "
-                "canonical_key=%r slots_table=%r region=%r",
-                appointment_id,
-                doctor_id,
-                type(doctor_id).__name__,
-                slot_time,
-                type(slot_time).__name__,
-                update["Update"]["Key"],
-                slots_table.name,
-                REGION,
-            )
             client.transact_write_items(TransactItems=[update, marker_put])
+            if is_legacy_map:
+                # Repair the numeric counter after the type-change transaction
+                # succeeds. A second atomic write sets bookedCount to the
+                # correct value now that the Map has been removed.
+                slots_table.update_item(
+                    Key={"doctorId": str(doctor_id), "slotTime": slot_time},
+                    UpdateExpression="SET #booked = :new_count",
+                    ExpressionAttributeNames={"#booked": "bookedCount"},
+                    ExpressionAttributeValues={":new_count": new_booked},
+                )
             logger.info(
                 "Cancelled appointment seat released appointment_id=%s doctor_id=%s "
                 "booked_count=%s->%s status=%s->%s released=%s counter_type=%s",
@@ -451,64 +465,14 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
             )
             return released
         except ClientError as error:
-            error_info = error.response.get("Error", {})
-            code = error_info.get("Code")
+            code = error.response.get("Error", {}).get("Code")
             if code == "TransactionCanceledException":
-                # AWS includes one cancellation reason per TransactItems entry.
-                # Log the operation-level reason: the top-level exception message
-                # alone (for example "[ValidationError, None]") is not enough to
-                # diagnose a production data/key/expression problem.
-                reasons = error.response.get("CancellationReasons") or []
-                for operation_index, reason in enumerate(reasons):
-                    reason = reason or {}
-                    logger.error(
-                        "DynamoDB seat-release transaction cancelled "
-                        "appointment_id=%s operation=%s code=%s message=%s",
-                        appointment_id,
-                        operation_index,
-                        reason.get("Code"),
-                        reason.get("Message"),
-                    )
-                logger.error(
-                    "DynamoDB seat-release transaction context "
-                    "appointment_id=%s doctor_id=%s slot_time=%s "
-                    "slots_table=%s idempotency_table=%s "
-                    "counter_attribute_present=%s counter_python_type=%s "
-                    "seat_revision_present=%s seat_revision_python_type=%s "
-                    "aws_error=%s",
-                    appointment_id,
-                    doctor_id,
-                    slot_time,
-                    slots_table.name,
-                    idempotency_table.name,
-                    has_counter,
-                    type(raw_booked).__name__,
-                    "seatRevision" in slot,
-                    type(slot.get("seatRevision")).__name__,
-                    error_info.get("Message"),
-                )
-
                 marker_result = idempotency_table.get_item(
                     Key={"idemKey": marker}, ConsistentRead=True
                 )
                 if marker_result.get("Item"):
                     return False
-
-                # Only retry contention. A ValidationError is deterministic for
-                # the same request and retrying it five times only adds latency.
-                reason_codes = {
-                    (reason or {}).get("Code") for reason in reasons
-                }
-                retryable = (
-                    not reason_codes
-                    or reason_codes.intersection({
-                        "ConditionalCheckFailed",
-                        "TransactionConflict",
-                        "ThrottlingError",
-                        "ProvisionedThroughputExceeded",
-                    })
-                )
-                if retryable and attempt < 4:
+                if attempt < 4:
                     logger.info(
                         "Retrying seat release after concurrent slot update "
                         "appointment_id=%s attempt=%s",

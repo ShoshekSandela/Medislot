@@ -1,4 +1,3 @@
-
 import json
 import logging
 import functools
@@ -1759,12 +1758,20 @@ def public_doctor_slots(connection, doctor_id, query_params):
         slot_time_key = str(item.get("slotTime", ""))[:19]
         rds_booked = rds_booked_by_time.get(slot_time_key, 0)
         if rds_booked != booked:
-            logger.warning(
-                "Hiding slot while RDS/DynamoDB seat counts differ doctor_id=%s "
+            # RDS is the system of record for appointment state. Use its count
+            # as the authoritative value instead of hiding the slot. Hiding was
+            # the previous behaviour but it caused a cancelled slot to become
+            # invisible to patients even though the seat was genuinely free —
+            # the DynamoDB counter may lag RDS after a cancellation (especially
+            # when the bookedCount was a legacy Map type and the transactional
+            # update failed with ValidationError). Showing the slot with the
+            # RDS-derived count lets patients book the freed seat immediately.
+            logger.info(
+                "Slot count mismatch corrected by RDS doctor_id=%s "
                 "slot_time=%s rds_booked=%s dynamodb_booked=%s",
                 doctor_id, slot_time_key, rds_booked, booked,
             )
-            continue
+            booked = rds_booked
 
         # Older fully-booked records may retain a full-state status even after
         # cancellation releases a seat. Treat them as bookable when capacity is
