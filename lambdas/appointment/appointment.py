@@ -19,7 +19,6 @@ import logging
 import os
 import random
 import time
-import botocore
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
@@ -344,240 +343,119 @@ def slot_status_for_counts(booked, capacity):
     return "AVAILABLE"
 
 
+BLOCKED_SLOT_STATUSES = {
+    "BLACKOUT", "INACTIVE", "SLOT_CANCELLED_BY_DOCTOR", "CANCELLED", "CANCELLING",
+}
+
+
 def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, cancellation_type="PATIENT"):
-    """Release one cancelled appointment seat exactly once.
+    """Free one seat for one cancelled appointment, exactly once.
 
-    Always replace bookedCount with a numeric value. This supports both current
-    numeric counters and legacy DynamoDB Map/List counters. In particular, do
-    not use a numeric comparison (bookedCount > 0): DynamoDB rejects that
-    expression when an older item stores bookedCount as a Map.
+    Uses a single conditional UpdateItem on the slot, the same write pattern the
+    booking path uses. It no longer uses TransactWriteItems. Idempotency lives on
+    the slot itself:
 
-    The slot update and idempotency marker are committed in one transaction.
-    seatRevision is a dedicated numeric compare-and-swap token shared by booking
-    and cancellation. It avoids arithmetic on legacy version Map attributes.
+      * ``releasedAppointments`` (string set) records every released appointment.
+        The write adds this appointment's id in the same request that decrements
+        ``bookedCount``, and the condition ``NOT contains(...)`` rejects a second
+        release of the same appointment.
+      * ``seatRevision`` is checked and bumped, so a release and a booking cannot
+        interleave on the same slot.
+
+    Appointments released by the previous transactional code are recognised by
+    their ``SEAT_RELEASE#<appointment_id>`` marker and are never released again.
+    Returns True when this call freed a seat, False when nothing was freed.
     """
-    marker = f"SEAT_RELEASE#{appointment_id}"
-    client = dynamodb.meta.client
+    legacy_marker = f"SEAT_RELEASE#{appointment_id}"
+    if idempotency_table.get_item(Key={"idemKey": legacy_marker}, ConsistentRead=True).get("Item"):
+        return False
+
+    token = str(appointment_id)
+    key = {"doctorId": str(doctor_id), "slotTime": slot_time}
 
     for attempt in range(5):
-        marker_result = idempotency_table.get_item(
-            Key={"idemKey": marker}, ConsistentRead=True
-        )
-        if marker_result.get("Item"):
-            return False
-
-        slot_result = slots_table.get_item(
-            Key={"doctorId": str(doctor_id), "slotTime": slot_time},
-            ConsistentRead=True,
-        )
-        slot = slot_result.get("Item")
+        slot = slots_table.get_item(Key=key, ConsistentRead=True).get("Item")
         if not slot:
             raise ApiError(409, "The appointment slot no longer exists")
 
-        has_counter = "bookedCount" in slot
+        if token in (slot.get("releasedAppointments") or set()):
+            return False
+
         raw_booked = slot.get("bookedCount", 0)
-        booked = booked_count_value(raw_booked)
+        if isinstance(raw_booked, bool) or not isinstance(raw_booked, (int, Decimal)):
+            # Legacy Map/List counters are not repaired automatically: a
+            # wrong guess would change the seat count. Fail loudly instead.
+            raise ApiError(409, "Slot seat counter needs manual repair before this cancellation can be applied")
+        booked = int(raw_booked)
+        if booked <= 0:
+            return False
+
         revision = int(slot.get("seatRevision", 0) or 0)
-        current_status = str(slot.get("status", "AVAILABLE")).upper()
-        # Recalculate from the numeric counter. Never reopen a blackout,
-        # inactive, or doctor-cancelled slot.
         capacity = max(1, int(slot.get("capacity", 1) or 1))
-        blocked_statuses = {
-            "BLACKOUT", "INACTIVE", "SLOT_CANCELLED_BY_DOCTOR",
-            "CANCELLED", "CANCELLING",
-        }
+        current_status = str(slot.get("status", "AVAILABLE")).upper()
+        next_booked = booked - 1
+
         if str(cancellation_type).upper() == "DOCTOR":
             next_status = "SLOT_CANCELLED_BY_DOCTOR"
-        elif slot.get("isBlackout") is True or current_status in blocked_statuses:
+        elif slot.get("isBlackout") is True or current_status in BLOCKED_SLOT_STATUSES:
+            # Never reopen a blackout, inactive, or doctor-cancelled slot.
             next_status = current_status
         else:
-            next_status = slot_status_for_counts(max(0, booked - 1), capacity)
+            next_status = slot_status_for_counts(next_booked, capacity)
 
-        marker_put = {
-            "Put": {
-                "TableName": idempotency_table.name,
-                "Item": {
-                    "idemKey": {"S": marker},
-                    "status": {"S": "COMPLETE"},
-                },
-                "ConditionExpression": "attribute_not_exists(idemKey)",
-            }
-        }
-
-        # Even when the numeric count is already zero, write the normalised
-        # counter/status with the idempotency marker. This repairs legacy
-        # FULL/FULLY_BOOKED labels without ever decrementing below zero.
-        new_booked = max(0, booked - 1)
-        released = booked > 0
-
-        # Detect whether the stored bookedCount is a legacy DynamoDB Map/List.
-        # TransactWriteItems rejects type changes (Map -> Number) with a
-        # ValidationError cancellation reason. For those items we must REMOVE
-        # the old Map attribute and SET the new numeric value in one expression.
-        # Regular update_item allows type changes but transactional writes do not.
-        is_legacy_map = isinstance(raw_booked, dict) or isinstance(raw_booked, list)
-
-        # CAS uses a dedicated numeric attribute. Legacy `version` and
-        # `bookedCount` may be Maps; neither participates in arithmetic.
-        revision_condition = (
-            "attribute_not_exists(#revision)" if "seatRevision" not in slot
-            else "#revision = :revision"
-        )
-        condition_values = {
-            ":new_count": {"N": str(new_booked)},
-            ":next_revision": {"N": str(revision + 1)},
+        values = {
+            ":booked": booked,
+            ":next_booked": next_booked,
+            ":next_status": next_status,
+            ":next_revision": revision + 1,
+            ":token": token,
+            ":appt": {token},
         }
         if "seatRevision" in slot:
-            condition_values[":revision"] = {"N": str(revision)}
-
-        if is_legacy_map:
-            # Convert the legacy Map/List counter directly to a Number in the
-            # same transactional Update as the idempotency marker. DynamoDB
-            # SET replaces the existing attribute value, including its type.
-            # Keeping the counter write in this transaction prevents a crash
-            # after marking the release COMPLETE from leaving the slot stale.
-            update_expr = (
-                "SET #booked = :new_count, #status = :new_status, "
-                "#revision = :next_revision"
-            )
-            cond_expr = f"attribute_exists(#booked) AND {revision_condition}"
+            revision_condition = "#revision = :revision"
+            values[":revision"] = revision
         else:
-            counter_condition = (
-                "attribute_exists(#booked)" if has_counter
-                else "attribute_not_exists(#booked)"
-            )
-            update_expr = (
-                "SET #booked = :new_count, #status = :new_status, "
-                "#revision = :next_revision"
-            )
-            cond_expr = f"{counter_condition} AND {revision_condition}"
+            revision_condition = "attribute_not_exists(#revision)"
 
-        # NOTE: slotId is intentionally NOT included in the condition.
-        # The DynamoDB primary key (doctorId + slotTime) uniquely identifies
-        # the slot. Including slotId caused TransactionCanceledException when
-        # the value stored in RDS appointments.slot_id drifted from the
-        # current DynamoDB slotId (e.g. after a slot was regenerated), making
-        # all 5 retries fail and preventing the seat from ever being released.
-        # seatRevision provides the compare-and-swap safety needed to prevent
-        # lost updates without requiring slotId equality.
-        update_item_values = {
-            **condition_values,
-            ":new_status": {"S": next_status},
-        }
-        # Build the transaction key from the canonical key values returned by
-        # the strongly-consistent read of this exact DynamoDB item. This avoids
-        # using appointment/RDS values (which may be formatted differently)
-        # when constructing the low-level TransactWriteItems key.
-        canonical_doctor_id = slot.get("doctorId")
-        canonical_slot_time = slot.get("slotTime")
-        if canonical_doctor_id is None or canonical_slot_time is None:
-            raise ApiError(409, "The appointment slot has an invalid DynamoDB key")
-
-        transaction_key = {
-            "doctorId": {"S": str(canonical_doctor_id)},
-            "slotTime": {"S": str(canonical_slot_time)},
-        }
-        update = {
-            "Update": {
-                "TableName": slots_table.name,
-                "Key": transaction_key,
-                "UpdateExpression": update_expr,
-                "ConditionExpression": cond_expr,
-                "ExpressionAttributeNames": {
+        try:
+            slots_table.update_item(
+                Key=key,
+                UpdateExpression=(
+                    "SET #booked = :next_booked, #status = :next_status, "
+                    "#revision = :next_revision ADD #released :appt"
+                ),
+                ConditionExpression=(
+                    f"#booked = :booked AND {revision_condition} "
+                    "AND NOT contains(#released, :token)"
+                ),
+                ExpressionAttributeNames={
                     "#booked": "bookedCount",
                     "#status": "status",
                     "#revision": "seatRevision",
+                    "#released": "releasedAppointments",
                 },
-                "ExpressionAttributeValues": update_item_values,
-            }
-        }
-
-        try:
-            logger.info(
-                "Submitting cancellation seat-release transaction "
-                "appointment_id=%s slots_table=%s key_attributes=%s "
-                "doctor_id_type=%s slot_time_type=%s",
-                appointment_id,
-                slots_table.name,
-                sorted(transaction_key.keys()),
-                type(canonical_doctor_id).__name__,
-                type(canonical_slot_time).__name__,
+                ExpressionAttributeValues=values,
             )
-            # TEMPORARY DIAGNOSTIC: remove after the ValidationError is found.
-            logger.info(
-                "Seat release transaction payload appointment_id=%s botocore=%s payload=%s",
-                appointment_id,
-                botocore.__version__,
-                json.dumps([update, marker_put], default=str),
-            )
-            client.transact_write_items(TransactItems=[update, marker_put])
             logger.info(
                 "Cancelled appointment seat released appointment_id=%s doctor_id=%s "
-                "booked_count=%s->%s status=%s->%s released=%s counter_type=%s",
-                appointment_id, doctor_id, booked, new_booked,
-                current_status, next_status, released, type(raw_booked).__name__,
+                "booked_count=%s->%s status=%s->%s attempt=%s",
+                appointment_id, doctor_id, booked, next_booked,
+                current_status, next_status, attempt + 1,
             )
-            return released
+            return True
         except ClientError as error:
-            error_response = error.response or {}
-            error_code = (error_response.get("Error") or {}).get("Code")
-            cancellation_reasons = error_response.get("CancellationReasons") or []
-
-            # Keep the complete DynamoDB cancellation reasons in CloudWatch.
-            # The top-level TransactionCanceledException alone does not tell
-            # us whether this was a CAS conflict, a duplicate marker, or an
-            # invalid transaction request.
-            logger.error(
-                "Seat release DynamoDB transaction failed "
-                "appointment_id=%s error_code=%s error_message=%s "
-                "cancellation_reasons=%s",
-                appointment_id,
-                error_code,
-                (error_response.get("Error") or {}).get("Message"),
-                json.dumps(cancellation_reasons, default=str),
+            if error.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
+                logger.exception("Seat release update failed appointment_id=%s", appointment_id)
+                raise
+            # Either a concurrent booking/release changed the slot, or this
+            # appointment was just released by a duplicate request. Re-read and
+            # decide again; the idempotency check at the top handles the latter.
+            logger.info(
+                "Seat release conflict appointment_id=%s attempt=%s", appointment_id, attempt + 1,
             )
+            time.sleep(min(0.025 * (2 ** attempt) + random.uniform(0, 0.025), 0.25))
 
-            if error_code == "TransactionCanceledException":
-                marker_result = idempotency_table.get_item(
-                    Key={"idemKey": marker}, ConsistentRead=True
-                )
-                if marker_result.get("Item"):
-                    return False
-
-                reason_codes = {
-                    reason.get("Code")
-                    for reason in cancellation_reasons
-                    if isinstance(reason, dict)
-                }
-
-                # ValidationError is a malformed/invalid transaction
-                # operation, not a concurrency conflict. Retrying the same
-                # request cannot repair it; surface it with its full reason.
-                if "ValidationError" in reason_codes:
-                    raise
-
-                # Retry only conditions that can legitimately change after
-                # re-reading the slot. Do not retry validation or other
-                # permanent transaction failures.
-                retryable_codes = {
-                    "ConditionalCheckFailed",
-                    "TransactionConflict",
-                    "ProvisionedThroughputExceeded",
-                    "ThrottlingError",
-                }
-                if reason_codes.intersection(retryable_codes) and attempt < 4:
-                    logger.info(
-                        "Retrying seat release after retryable DynamoDB "
-                        "transaction conflict appointment_id=%s attempt=%s "
-                        "reasons=%s",
-                        appointment_id,
-                        attempt + 1,
-                        sorted(reason_codes),
-                    )
-                    continue
-            raise
-
-    raise ApiError(409, "Slot availability changed during cancellation. Please refresh and retry.")
+    raise ApiError(503, "Slot availability changed during cancellation. Retry the cancellation.")
 
 
 def appointment_slot_time(appointment_row):
@@ -1317,9 +1195,9 @@ def retry_seat_release(appointment_id, caller_id, role):
     counts it as booked. The patient UI no longer offers Cancel for that
     appointment, so this endpoint is the repair path.
 
-    Safe to repeat: release_cancelled_seat_once() is guarded by the
-    SEAT_RELEASE#<appointment_id> marker, which is written in the same
-    transaction as the counter change. A seat is therefore freed at most once.
+    Safe to repeat: release_cancelled_seat_once() records each released
+    appointment on the slot in the same conditional write that frees the seat,
+    so a seat is freed at most once.
     """
     if role not in {"patient", "doctor"}:
         raise ApiError(403, "Only the patient or treating doctor can retry a seat release")
