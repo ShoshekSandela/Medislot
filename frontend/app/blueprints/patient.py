@@ -303,6 +303,7 @@ def book_slot():
 @bp.post("/booking-history/<int:appointment_id>/cancel")
 @patient_required
 def cancel_booking(appointment_id):
+    doctor_redirect = None
     try:
         result = post(f"/appointments/{appointment_id}/cancel", {})
         cancellation = result.get("cancellation", {}) if isinstance(result, dict) else {}
@@ -311,8 +312,24 @@ def cancel_booking(appointment_id):
             f"({cancellation.get('refund_percentage', '0')}% of the consultation fee).",
             "success",
         )
+        # Return the patient to the same doctor's slot list so the released
+        # seat is immediately visible after cancellation.
+        try:
+            detail_result = get(f"/appointments/{appointment_id}")
+            appointment = detail_result.get("appointment", {}) if isinstance(detail_result, dict) else {}
+            doctor_id = appointment.get("doctor_id")
+            slot_date = str(appointment.get("start_at_ist") or "")[:10]
+            if doctor_id and slot_date:
+                doctor_redirect = url_for(
+                    "patient.doctor_detail", doctor_id=int(doctor_id), date=slot_date
+                )
+        except APIError:
+            # Cancellation already succeeded; booking history is a safe fallback.
+            doctor_redirect = None
     except APIError as exc:
         flash(exc.message, "error")
+    if doctor_redirect:
+        return redirect(doctor_redirect)
     return redirect(url_for("patient.booking_history") + "#booking-history")
 
 

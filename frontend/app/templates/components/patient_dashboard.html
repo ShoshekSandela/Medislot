@@ -144,7 +144,7 @@
                   <strong>{{ slot.display_time }}</strong>
                   <span>{{ slot.display_date }} · IST</span>
                 </div>
-                <span class="status-pill {{ status_class }}">{{ status_label }}</span>
+<span class="status-pill {{ status_class }}">{{ status_label }}</span>
               </div>
               <div class="patient-slot-details">
                 <span><strong>Type:</strong> {{ slot.consultation_type_name }}</span>
@@ -152,7 +152,7 @@
                 <span><strong>Fee:</strong> ₹{{ slot.consultationFee }}</span>
                 <span><strong>Seats:</strong> {{ slot.freeSeats|default(0)|int }} available of {{ slot.capacity|default(1)|int }}</span>
               </div>
-              {% if slot.canBook and slot.freeSeats|int > 0 and slot.slotId and slot.slotTime %}
+{% if slot.canBook and slot.freeSeats|int > 0 and slot.slotId and slot.slotTime and slot_status in ['AVAILABLE', 'OPEN', 'PARTIALLY_BOOKED'] %}
               <form method="post" action="{{ url_for('patient.book_slot') }}" class="patient-book-slot-form" onsubmit="return confirm('Book this consultation slot?');">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <input type="hidden" name="doctor_id" value="{{ selected_doctor.doctor_id }}">

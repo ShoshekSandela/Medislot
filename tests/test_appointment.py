@@ -99,6 +99,21 @@ def test_capacity_three_allows_exactly_three_of_twenty(monkeypatch, quiet_aws):
     assert table.item["bookedCount"] <= table.item["capacity"]
 
 
+def test_partial_slot_remains_bookable_and_status_tracks_capacity(monkeypatch, quiet_aws):
+    table = FakeSlotTable(capacity=3)
+    table.item["bookedCount"] = 1
+    table.item["status"] = "PARTIALLY_BOOKED"
+    monkeypatch.setattr(appointment, "slots_table", table)
+
+    appointment.reserve_slot(42, table.item["slotTime"])
+    assert table.item["bookedCount"] == 2
+    assert table.item["status"] == "PARTIALLY_BOOKED"
+
+    appointment.reserve_slot(42, table.item["slotTime"])
+    assert table.item["bookedCount"] == 3
+    assert table.item["status"] == "FULLY_BOOKED"
+
+
 def test_refund_tier_cutoff_is_inclusive():
     tiers = [
         {"name": "FULL", "minimum_hours_before": Decimal("48"), "refund_percentage": Decimal("100")},

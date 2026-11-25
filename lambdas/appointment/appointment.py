@@ -378,21 +378,19 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
         booked = booked_count_value(raw_booked)
         revision = int(slot.get("seatRevision", 0) or 0)
         current_status = str(slot.get("status", "AVAILABLE")).upper()
-        # Some older slot records persist a full-state label. Once a seat is
-        # released, make those slots bookable again. Never reopen blackout,
-        # inactive, or doctor-cancelled slots.
-        reopenable_statuses = {
-            "AVAILABLE", "OPEN", "FULL", "FULL_BOOKED",
-            "FULLY_BOOKED", "BOOKED", "PARTIALLY_BOOKED",
-        }
+        # Recalculate from the numeric counter. Never reopen a blackout,
+        # inactive, or doctor-cancelled slot.
         capacity = max(1, int(slot.get("capacity", 1) or 1))
+        blocked_statuses = {
+            "BLACKOUT", "INACTIVE", "SLOT_CANCELLED_BY_DOCTOR",
+            "CANCELLED", "CANCELLING",
+        }
         if str(cancellation_type).upper() == "DOCTOR":
             next_status = "SLOT_CANCELLED_BY_DOCTOR"
-        elif current_status in reopenable_statuses:
-            next_status = slot_status_for_counts(max(0, booked - 1), capacity)
-        else:
-            # Never reopen a blackout, inactive, or doctor-cancelled slot.
+        elif slot.get("isBlackout") is True or current_status in blocked_statuses:
             next_status = current_status
+        else:
+            next_status = slot_status_for_counts(max(0, booked - 1), capacity)
 
         marker_put = {
             "Put": {
