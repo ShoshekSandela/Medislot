@@ -1984,8 +1984,10 @@ def schedule():
             sid = str(appt.get("slot_id") or "")
             if sid:
                 rds_booked_by_slot[sid] = rds_booked_by_slot.get(sid, 0) + 1
-            # Do not aggregate by start time: separate consultation types or
-            # hospital branches can share a start time but are distinct slots.
+            start_value = appt.get("start_at_ist")
+            if start_value:
+                start_key = str(start_value)[:19].replace(" ", "T")
+                rds_booked_by_slot[start_key] = rds_booked_by_slot.get(start_key, 0) + 1
 
 
 
@@ -2041,7 +2043,10 @@ def schedule():
             # zero. Falling back to DynamoDB when the RDS count is zero leaves
             # cancelled seats looking booked after a successful RDS commit.
             dynamodb_booked = booked_count_value(slot.get("bookedCount", 0))
-            booked = rds_booked_by_slot.get(slot_id_key, 0)
+            booked = rds_booked_by_slot.get(
+                slot_id_key,
+                rds_booked_by_slot.get(slot_time_key, 0),
+            )
             slot["capacitySyncPending"] = dynamodb_booked != booked
 
             # Write the reconciled count back so the template reads

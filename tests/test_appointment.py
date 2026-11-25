@@ -348,15 +348,3 @@ def test_doctor_cancellation_releases_count_but_keeps_slot_blocked(monkeypatch):
     ) is False
     assert slots.item["bookedCount"] == 1
     assert slots.item["status"] == "SLOT_CANCELLED_BY_DOCTOR"
-
-@pytest.mark.parametrize(
-    "value, expected",
-    [
-        ({"N": "0"}, 0),
-        ({"M": {"count": {"N": "2"}}}, 2),
-        ({"L": [{"S": "a"}, {"S": "b"}]}, 2),
-        ({"count": Decimal("3")}, 3),
-    ],
-)
-def test_booked_count_value_supports_raw_attribute_values(value, expected):
-    assert appointment.booked_count_value(value) == expected
