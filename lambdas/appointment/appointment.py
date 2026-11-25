@@ -389,9 +389,11 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
             condition_values[":revision"] = {"N": str(revision)}
 
         if is_legacy_map:
-            # Replace the legacy Map with a numeric counter atomically.
-            # The existence check and revision condition prevent a stale or
-            # repeated conversion from overwriting a newer seat count.
+            # Convert the legacy Map/List counter directly to a Number in the
+            # same transactional Update as the idempotency marker. DynamoDB
+            # SET replaces the existing attribute value, including its type.
+            # Keeping the counter write in this transaction prevents a crash
+            # after marking the release COMPLETE from leaving the slot stale.
             update_expr = (
                 "SET #booked = :new_count, #status = :new_status, "
                 "#revision = :next_revision"
