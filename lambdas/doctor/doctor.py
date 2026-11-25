@@ -1076,6 +1076,48 @@ def consultation_types(connection, doctor_id, method, data, item_id=None):
     return response(405, {"message": "Method not allowed"})
 
 
+def has_overlapping_availability(
+    cursor,
+    doctor_id,
+    day_of_week,
+    start_time,
+    end_time,
+    effective_from,
+    effective_until=None,
+    exclude_availability_id=None,
+):
+    """Return True when another active weekly window overlaps this one.
+
+    A doctor has one DynamoDB slot per start time, so different consultation
+    types must not create simultaneous availability windows.
+    """
+    sql = """
+        SELECT availability_id
+        FROM doctor_availability
+        WHERE doctor_id = %s
+          AND day_of_week = %s
+          AND is_active = TRUE
+          AND start_time < %s
+          AND end_time > %s
+          AND effective_from <= COALESCE(%s, '9999-12-31')
+          AND (effective_until IS NULL OR effective_until >= %s)
+    """
+    params = [
+        doctor_id,
+        day_of_week,
+        end_time,
+        start_time,
+        effective_until,
+        effective_from,
+    ]
+    if exclude_availability_id is not None:
+        sql += " AND availability_id <> %s"
+        params.append(exclude_availability_id)
+    sql += " LIMIT 1"
+    cursor.execute(sql, tuple(params))
+    return cursor.fetchone() is not None
+
+
 @log_execution
 def availability(connection, doctor_id, method, data, item_id=None):
     logger.info(
@@ -1174,6 +1216,23 @@ def availability(connection, doctor_id, method, data, item_id=None):
             )
             if not cursor.fetchone():
                 return response(400, {"message": "Consultation type not found or inactive"})
+
+            if bool(data.get("is_active", True)) and has_overlapping_availability(
+                cursor,
+                doctor_id,
+                day,
+                data["start_time"],
+                data["end_time"],
+                data["effective_from"],
+                data.get("effective_until"),
+            ):
+                return response(409, {
+                    "message": (
+                        "This time overlaps another active availability window. "
+                        "A doctor can have only one consultation type scheduled at a time."
+                    )
+                })
+
             logger.info("Availability create step 4/7: inserting availability record into RDS")
             cursor.execute(
                 """
@@ -1263,6 +1322,23 @@ def availability(connection, doctor_id, method, data, item_id=None):
             )
             if not cursor.fetchone():
                 return response(400, {"message": "Consultation type not found or inactive"})
+
+            if bool(merged.get("is_active", True)) and has_overlapping_availability(
+                cursor,
+                doctor_id,
+                merged["day_of_week"],
+                merged["start_time"],
+                merged["end_time"],
+                merged["effective_from"],
+                merged.get("effective_until"),
+                exclude_availability_id=item_id,
+            ):
+                return response(409, {
+                    "message": (
+                        "This time overlaps another active availability window. "
+                        "A doctor can have only one consultation type scheduled at a time."
+                    )
+                })
 
             updates = {key: merged[key] for key in updates}
 

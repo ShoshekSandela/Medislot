@@ -141,6 +141,7 @@ def get_availability(connection, day_of_week, target_date, doctor_id=None):
               da.effective_until IS NULL
               OR da.effective_until >= %s
           )
+        ORDER BY da.start_time, da.availability_id
     """
     params = [day_of_week, target_date, target_date]
     if doctor_id is not None:
@@ -280,13 +281,19 @@ def create_slot(
         )
         existing_item = existing_response.get("Item", {})
         if existing_item.get("slotId") != slot_id:
-            raise RuntimeError(
-                "Slots key collision: the same doctorId and slotTime are already "
-                "used by a different hospital or consultation type. "
-                f"doctorId={availability['doctor_id']} "
-                f"slotTime={start_ist.isoformat(timespec='seconds')} "
-                f"existingSlotId={existing_item.get('slotId')} requestedSlotId={slot_id}"
+            # The table intentionally has one slot per doctor and start time.
+            # A different consultation type/hospital cannot occupy this key.
+            # Keep the existing slot (and its booking data) and let the
+            # materializer continue instead of failing the entire date range.
+            logger.warning(
+                "SLOT OVERLAP SKIPPED: doctor_id=%s slot_time=%s "
+                "existing_slot_id=%s requested_slot_id=%s",
+                availability["doctor_id"],
+                start_ist.isoformat(timespec="seconds"),
+                existing_item.get("slotId"),
+                slot_id,
             )
+            return "overlap_skipped"
 
         # Existing slot: update only blackout/status metadata if it has no
         # bookings. Never reset capacity, bookedCount, or other booking data.
@@ -361,7 +368,14 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None, reques
     day_of_week = (target_date.weekday() + 1) % 7
     if requested_weekdays is not None and day_of_week not in requested_weekdays:
         logger.info("Skipping date outside requested weekdays date=%s day_of_week=%s", target_date, day_of_week)
-        return {"created": 0, "duplicates": 0, "blackout_slots": 0, "deactivated": 0, "availability_records": 0}
+        return {
+            "created": 0,
+            "duplicates": 0,
+            "blackout_slots": 0,
+            "deactivated": 0,
+            "availability_records": 0,
+            "overlap_skipped": 0,
+        }
 
     availability_records = get_availability(
         connection,
@@ -380,9 +394,14 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None, reques
         "blackout_slots": 0,
         "deactivated": 0,
         "availability_records": len(availability_records),
+        "overlap_skipped": 0,
     }
     generated_slot_ids = set()
     generated_slot_keys = set()
+    # The Slots table key is doctorId + slotTime, so a doctor cannot have
+    # two appointments that overlap in time even if consultation types differ.
+    # Reserve the consultation plus configured buffer as one occupied interval.
+    occupied_intervals = []
 
     for availability_index, availability in enumerate(availability_records, start=1):
         logger.info(
@@ -454,6 +473,26 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None, reques
                 f"{availability['consultation_type_id']}#"
                 f"{current_start.isoformat(timespec='seconds')}"
             )
+            # Do not generate overlapping appointments for the same doctor.
+            # This also prevents two consultation types with the same start
+            # time from competing for the same DynamoDB primary key.
+            reserved_end = current_end + timedelta(minutes=buffer_minutes)
+            overlaps_existing_window = any(
+                current_start < occupied_end and reserved_end > occupied_start
+                for occupied_start, occupied_end in occupied_intervals
+            )
+            if overlaps_existing_window:
+                results["overlap_skipped"] = results.get("overlap_skipped", 0) + 1
+                logger.warning(
+                    "Overlapping availability slot skipped doctor_id=%s "
+                    "availability_id=%s consultation_type_id=%s start=%s end=%s",
+                    availability["doctor_id"], availability.get("availability_id"),
+                    availability.get("consultation_type_id"),
+                    current_start.isoformat(), current_end.isoformat(),
+                )
+                current_start += slot_interval
+                continue
+
             generated_slot_ids.add(slot_id)
             generated_slot_keys.add((
                 str(availability["doctor_id"]),
@@ -476,7 +515,13 @@ def materialize_day(connection, slots_table, target_date, doctor_id=None, reques
                 results["duplicates"] += 1
                 if result == "duplicate_blackout":
                     results["blackout_slots"] += 1
+            elif result == "overlap_skipped":
+                results["overlap_skipped"] = results.get("overlap_skipped", 0) + 1
+                occupied_intervals.append((current_start, reserved_end))
+                current_start += slot_interval
+                continue
 
+            occupied_intervals.append((current_start, reserved_end))
             current_start += slot_interval
 
     logger.info(
@@ -625,6 +670,7 @@ def lambda_handler(event, context):
         "blackout_slots": 0,
         "deactivated": 0,
         "availability_records": 0,
+        "overlap_skipped": 0,
     }
 
     try:
