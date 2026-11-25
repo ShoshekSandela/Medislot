@@ -1658,7 +1658,7 @@ def doctor_schedule(connection, doctor_id, query_params):
                 JOIN patients p ON p.patient_id = a.patient_id
                 WHERE a.doctor_id = %s
                   AND DATE(a.start_at_ist) = %s
-                  AND a.status = 'BOOKED'
+                  AND a.status IN ('BOOKED', 'CONFIRMED')
                 ORDER BY a.start_at_ist
                 """,
                 (int(doctor_id), target_date),
@@ -1817,16 +1817,16 @@ def public_doctor_slots(connection, doctor_id, query_params):
         items.extend(result.get("Items", []))
 
     # RDS owns appointment state; DynamoDB owns atomic seat allocation.
-    # Return every future generated slot, including full and blocked slots.
-    # When the two stores disagree, expose CAPACITY_SYNC_PENDING and disable
-    # booking rather than hiding the slot or advertising an unsafe free seat.
+    # Do not expose a slot while the two disagree after a partial cancellation.
+    # The cancellation endpoint returns a retryable error until its atomic
+    # DynamoDB seat-release transaction has completed.
     with connection.cursor() as cursor:
         cursor.execute(
             """
             SELECT start_at_ist, COUNT(*) AS booked_count
             FROM appointments
             WHERE doctor_id = %s
-              AND status = 'BOOKED'
+              AND status IN ('BOOKED', 'CONFIRMED')
               AND start_at_ist >= %s
               AND start_at_ist < %s
             GROUP BY start_at_ist
@@ -1857,55 +1857,59 @@ def public_doctor_slots(connection, doctor_id, query_params):
         rds_booked = rds_booked_by_time.get(slot_time_key, 0)
         capacity_sync_pending = rds_booked != booked
 
-        # Keep every generated slot visible, including fully booked slots.
-        # A cross-store mismatch is visible as SYNC_PENDING but never bookable.
         if capacity_sync_pending:
             logger.warning(
-                "Slot capacity sync pending doctor_id=%s slot_time=%s "
+                "Slot count mismatch doctor_id=%s slot_time=%s "
                 "rds_booked=%s dynamodb_booked=%s",
-                doctor_id, slot_time_key, rds_booked, booked,
+                doctor_id,
+                slot_time_key,
+                rds_booked,
+                booked,
             )
-            booked = rds_booked
 
         if str(item.get("slotTime", ""))[:19] <= now_ist:
             continue
 
+        # Keep blackout slots visible, but do not expose inactive or
+        # doctor-cancelled slots as bookable appointment choices.
         blocked_statuses = {
-            "BLACKOUT", "INACTIVE", "SLOT_CANCELLED_BY_DOCTOR", "CANCELLED",
+            "INACTIVE",
+            "SLOT_CANCELLED_BY_DOCTOR",
+            "CANCELLED",
+            "CANCELLING",
         }
-        supported_statuses = {
-            "AVAILABLE", "OPEN", "PARTIALLY_BOOKED", "BOOKED",
-            "FULL", "FULL_BOOKED", "FULLY_BOOKED", "CAPACITY_SYNC_PENDING",
-            *blocked_statuses,
-        }
-        if slot_status not in supported_statuses:
-            logger.warning(
-                "Ignoring slot with unsupported state doctor_id=%s slot_time=%s status=%s",
-                doctor_id, slot_time_key, slot_status,
-            )
+        if slot_status in blocked_statuses:
             continue
-        if item.get("isBlackout") is True:
-            slot_status = "BLACKOUT"
-        elif slot_status in blocked_statuses:
-            pass
-        elif capacity_sync_pending:
-            slot_status = "CAPACITY_SYNC_PENDING"
-        elif booked >= capacity:
-            slot_status = "FULLY_BOOKED"
-        elif booked > 0:
-            slot_status = "PARTIALLY_BOOKED"
-        else:
-            slot_status = "AVAILABLE"
 
-        item["status"] = slot_status
-        item["capacitySyncPending"] = capacity_sync_pending
+        is_blackout = (
+            item.get("isBlackout") is True
+            or slot_status == "BLACKOUT"
+        )
+
+        # DynamoDB bookedCount is authoritative for atomic seat allocation.
+        # Never replace it with the RDS count merely to make the UI agree.
+        if is_blackout:
+            item["status"] = "BLACKOUT"
+        elif booked >= capacity:
+            item["status"] = "BOOKED"
+        elif booked > 0:
+            item["status"] = "PARTIALLY_BOOKED"
+        else:
+            item["status"] = "OPEN"
+
         item["bookedCount"] = booked
         item["capacity"] = capacity
         item["freeSeats"] = max(0, capacity - booked)
+        item["capacitySyncPending"] = capacity_sync_pending
+        item["rdsBookedCount"] = rds_booked
+
+        # Slots stay visible during cross-store reconciliation, but booking
+        # is disabled until RDS and DynamoDB agree. The booking Lambda still
+        # performs the authoritative conditional DynamoDB seat reservation.
         item["canBook"] = (
             not capacity_sync_pending
-            and slot_status in {"AVAILABLE", "OPEN", "PARTIALLY_BOOKED"}
-            and item.get("isBlackout") is not True
+            and not is_blackout
+            and item["status"] in {"OPEN", "PARTIALLY_BOOKED"}
             and item["freeSeats"] > 0
         )
         slots.append(item)

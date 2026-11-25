@@ -786,7 +786,7 @@ def book_appointment(event, patient_id, request_id):
                     """SELECT COUNT(*) AS active_count
                        FROM appointments
                        WHERE patient_id = %s
-                         AND status = 'BOOKED'
+                         AND status IN ('CONFIRMED', 'BOOKED')
                          AND start_at_ist >= NOW()""",
                     (patient_id,),
                 )
@@ -799,7 +799,7 @@ def book_appointment(event, patient_id, request_id):
                        FROM appointments
                        WHERE patient_id = %s
                          AND doctor_id = %s
-                         AND status = 'BOOKED'
+                         AND status IN ('CONFIRMED', 'BOOKED')
                          AND start_at_ist >= NOW()""",
                     (patient_id, doctor_id),
                 )
@@ -812,7 +812,7 @@ def book_appointment(event, patient_id, request_id):
 
                 cursor.execute(
                     """SELECT appointment_id FROM appointments
-                       WHERE patient_id = %s AND slot_id = %s AND status = 'BOOKED'
+                       WHERE patient_id = %s AND slot_id = %s AND status IN ('CONFIRMED', 'BOOKED')
                        LIMIT 1""",
                     (patient_id, slot_id),
                 )
@@ -843,7 +843,7 @@ def book_appointment(event, patient_id, request_id):
                         slot_id, start_at_ist, end_at_ist, timezone, status,
                         consultation_fee, idempotency_key)
                        VALUES (%s, %s, %s, %s, %s, %s, %s, 'Asia/Kolkata',
-                               'BOOKED', %s, %s)""",
+                               'CONFIRMED', %s, %s)""",
                     (
                         patient_id, doctor_id, int(slot["hospitalId"]),
                         int(slot["consultationTypeId"]), slot_id,
@@ -869,7 +869,7 @@ def book_appointment(event, patient_id, request_id):
             "start_at_ist": mysql_start.isoformat(),
             "end_at_ist": mysql_end.isoformat(),
             "consultation_fee": str(fee),
-            "status": "BOOKED",
+            "status": "CONFIRMED",
         }
         try:
             complete_idempotency(idem_key, appointment)
@@ -963,7 +963,7 @@ def cancel_appointment(appointment_id, caller_id, role):
             if role not in {"patient", "doctor"}:
                 raise ApiError(403, "Only the patient or treating doctor can cancel this appointment")
 
-            if appointment["status"] == "CANCELLED":
+            if str(appointment["status"]).upper() in {"CANCELLED", "CANCELLED_BY_PATIENT", "CANCELLED_BY_DOCTOR"}:
                 cursor.execute(
                     """SELECT cancellation_type, original_fee, refund_percentage,
                               refund_amount, refund_tier
@@ -984,7 +984,7 @@ def cancel_appointment(appointment_id, caller_id, role):
                 original_fee = Decimal(str(existing_refund["original_fee"]))
                 refund_amount = Decimal(str(existing_refund["refund_amount"]))
                 already_cancelled = True
-            elif appointment["status"] != "BOOKED":
+            elif str(appointment["status"]).upper() not in {"BOOKED", "CONFIRMED"}:
                 raise ApiError(409, "Only booked appointments can be cancelled")
             else:
                 now = datetime.now(IST)
@@ -1017,10 +1017,10 @@ def cancel_appointment(appointment_id, caller_id, role):
                 )
                 cursor.execute(
                     """UPDATE appointments
-                       SET status = 'CANCELLED', cancelled_at_ist = %s,
+                       SET status = %s, cancelled_at_ist = %s,
                            updated_at = CURRENT_TIMESTAMP
-                       WHERE appointment_id = %s AND status = 'BOOKED'""",
-                    (now.replace(tzinfo=None), appointment_id),
+                       WHERE appointment_id = %s AND status IN ('CONFIRMED', 'BOOKED')""",
+                    ("CANCELLED_BY_DOCTOR" if cancellation_type == "DOCTOR" else "CANCELLED_BY_PATIENT", now.replace(tzinfo=None), appointment_id),
                 )
                 connection.commit()
     except Exception:
@@ -1054,7 +1054,7 @@ def cancel_appointment(appointment_id, caller_id, role):
 
     result = {
         "appointment_id": appointment_id,
-        "status": "CANCELLED",
+        "status": "CANCELLED_BY_DOCTOR" if cancellation_type == "DOCTOR" else "CANCELLED_BY_PATIENT",
         "cancellation_type": cancellation_type,
         "refund_tier": tier["name"],
         "original_fee": str(original_fee),
@@ -1117,7 +1117,7 @@ def cancel_doctor_slot(event, doctor_id):
         with connection.cursor() as cursor:
             cursor.execute(
                 """SELECT * FROM appointments
-                   WHERE doctor_id = %s AND start_at_ist = %s AND status = 'BOOKED'
+                   WHERE doctor_id = %s AND start_at_ist = %s AND status IN ('CONFIRMED', 'BOOKED')
                    FOR UPDATE""",
                 (doctor_id, mysql_slot_time),
             )
@@ -1135,10 +1135,10 @@ def cancel_doctor_slot(event, doctor_id):
                 )
                 cursor.execute(
                     """UPDATE appointments
-                       SET status = 'CANCELLED', cancelled_at_ist = %s,
+                       SET status = %s, cancelled_at_ist = %s,
                            updated_at = CURRENT_TIMESTAMP
-                       WHERE appointment_id = %s AND status = 'BOOKED'""",
-                    (now, appointment["appointment_id"]),
+                       WHERE appointment_id = %s AND status IN ('CONFIRMED', 'BOOKED')""",
+                    ("CANCELLED_BY_DOCTOR", now, appointment["appointment_id"]),
                 )
                 newly_cancelled.append(int(appointment["appointment_id"]))
 
@@ -1150,7 +1150,7 @@ def cancel_doctor_slot(event, doctor_id):
                    JOIN refund_ledger r ON r.appointment_id = a.appointment_id
                    WHERE a.doctor_id = %s
                      AND a.start_at_ist = %s
-                     AND a.status = 'CANCELLED'
+                     AND a.status IN ('CANCELLED', 'CANCELLED_BY_DOCTOR')
                      AND r.cancellation_type = 'DOCTOR'""",
                 (doctor_id, mysql_slot_time),
             )
@@ -1222,7 +1222,7 @@ def cancel_doctor_slot(event, doctor_id):
             "doctor_id": doctor_id,
             "slot_id": slot_id,
             "slot_time": slot_time,
-            "status": "CANCELLED",
+            "status": "CANCELLED_BY_DOCTOR",
             "cancellation_type": "DOCTOR",
             "refund_percentage": "100",
             "refund_tier": "DOCTOR_FULL",

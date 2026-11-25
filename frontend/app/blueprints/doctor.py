@@ -569,7 +569,7 @@ def dashboard():
 
             a for a in appts
 
-            if a.get("status") == "BOOKED"
+            if a.get("status") in {"BOOKED", "CONFIRMED"}
 
             and (
 
