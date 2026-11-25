@@ -26,6 +26,7 @@ import boto3
 import pymysql
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
+from boto3.dynamodb.types import TypeSerializer
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -50,6 +51,9 @@ slots_table = dynamodb.Table(os.environ.get("SLOTS_TABLE_NAME", "medislot-dev-sl
 idempotency_table = dynamodb.Table(
     os.environ.get("IDEMPOTENCY_TABLE_NAME", "medislot-dev-idempotency")
 )
+
+# Serializes canonical DynamoDB key values for low-level transactions.
+_dynamodb_serializer = TypeSerializer()
 
 
 class ApiError(Exception):
@@ -396,9 +400,13 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
         update = {
             "Update": {
                 "TableName": slots_table.name,
+                # Use the canonical key values returned by the strongly-consistent
+                # GetItem, rather than reconstructing them from appointment fields.
+                # TypeSerializer guarantees the low-level AttributeValue shape matches
+                # the stored key types (String in the current slots-table schema).
                 "Key": {
-                    "doctorId": {"S": str(doctor_id)},
-                    "slotTime": {"S": slot_time},
+                    "doctorId": _dynamodb_serializer.serialize(slot["doctorId"]),
+                    "slotTime": _dynamodb_serializer.serialize(slot["slotTime"]),
                 },
                 "UpdateExpression": (
                     "SET #booked = :new_count, #status = :new_status, "
@@ -420,6 +428,20 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
         }
 
         try:
+            logger.info(
+                "SEAT RELEASE TRANSACTION REQUEST "
+                "appointment_id=%r doctor_id=%r doctor_id_type=%s "
+                "slot_time=%r slot_time_type=%s "
+                "canonical_key=%r slots_table=%r region=%r",
+                appointment_id,
+                doctor_id,
+                type(doctor_id).__name__,
+                slot_time,
+                type(slot_time).__name__,
+                update["Update"]["Key"],
+                slots_table.name,
+                REGION,
+            )
             client.transact_write_items(TransactItems=[update, marker_put])
             logger.info(
                 "Cancelled appointment seat released appointment_id=%s doctor_id=%s "
