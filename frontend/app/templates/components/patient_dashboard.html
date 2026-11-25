@@ -136,8 +136,22 @@
           <div class="patient-slot-grid" id="patient-slot-grid">
             {% for slot in display_slots %}
             {% set slot_status = slot.status|default('AVAILABLE')|upper %}
-            {% set status_label = 'Open' if slot_status in ['AVAILABLE', 'OPEN'] else ('Partially booked' if slot_status == 'PARTIALLY_BOOKED' else ('Fully booked' if slot_status in ['FULL', 'FULL_BOOKED', 'FULLY_BOOKED', 'BOOKED'] else ('Capacity sync pending' if slot_status == 'CAPACITY_SYNC_PENDING' else ('Blackout' if slot_status == 'BLACKOUT' else 'Unavailable')))) %}
-            {% set status_class = 'good' if slot_status in ['AVAILABLE', 'OPEN'] else ('warning' if slot_status in ['PARTIALLY_BOOKED', 'CAPACITY_SYNC_PENDING'] else ('full' if slot_status in ['FULL', 'FULL_BOOKED', 'FULLY_BOOKED', 'BOOKED'] else 'muted-pill')) %}
+            {% if slot_status in ['AVAILABLE', 'OPEN'] %}
+              {% set status_label = 'Open' %}
+              {% set status_class = 'good' %}
+            {% elif slot_status == 'PARTIALLY_BOOKED' %}
+              {% set status_label = 'Partially booked' %}
+              {% set status_class = 'warning' %}
+            {% elif slot_status in ['FULL', 'FULL_BOOKED', 'FULLY_BOOKED', 'BOOKED'] %}
+              {% set status_label = 'Fully booked' %}
+              {% set status_class = 'full' %}
+            {% elif slot_status == 'BLACKOUT' %}
+              {% set status_label = 'Blackout' %}
+              {% set status_class = 'muted-pill' %}
+            {% else %}
+              {% set status_label = 'Unavailable' %}
+              {% set status_class = 'muted-pill' %}
+            {% endif %}
             <article class="slot-card patient-slot-card patient-slot-{{ status_class }}" data-consultation-type="{{ slot.consultationTypeId }}">
               <div class="patient-slot-heading">
                 <div class="patient-slot-time">
@@ -163,7 +177,7 @@
                 <button class="btn primary" type="submit">Book this slot</button>
               </form>
               {% else %}
-              <p class="muted">{% if slot_status == 'CAPACITY_SYNC_PENDING' %}Availability is being synchronized. Refresh shortly before booking.{% elif slot_status in ['FULL', 'FULL_BOOKED', 'FULLY_BOOKED', 'BOOKED'] %}This slot is fully booked. It remains visible, but cannot be booked right now.{% elif slot_status == 'BLACKOUT' %}The doctor is unavailable during this time.{% else %}Booking is unavailable for this slot.{% endif %}</p>
+              <p class="muted">{% if slot_status in ['FULL', 'FULL_BOOKED', 'FULLY_BOOKED', 'BOOKED'] %}This slot is fully booked. It remains visible, but cannot be booked right now.{% elif slot_status == 'BLACKOUT' %}The doctor is unavailable during this time.{% else %}Booking is unavailable for this slot.{% endif %}</p>
               {% endif %}
             </article>
             {% endfor %}

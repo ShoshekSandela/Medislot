@@ -2034,23 +2034,21 @@ def schedule():
 
             )
 
-            # Prefer the RDS-derived count (live, authoritative) over the
-            # DynamoDB counter (eventually consistent, may lag cancellations).
+            # DynamoDB is the seat-allocation authority. The booking Lambda
+            # reserves/releases seats there with seatRevision CAS, so the
+            # doctor dashboard must display the same counter used by patients
+            # and by the booking endpoint. RDS appointments are retained for
+            # patient details, but must not overwrite the atomic seat counter.
             slot_id_key = str(slot.get("slotId") or "")
             slot_time_key = str(slot.get("slotTime") or slot_start or "")[:19].replace(" ", "T")
-
-            # Every slot gets an RDS-derived live appointment count, including
-            # zero. Falling back to DynamoDB when the RDS count is zero leaves
-            # cancelled seats looking booked after a successful RDS commit.
             dynamodb_booked = booked_count_value(slot.get("bookedCount", 0))
-            booked = rds_booked_by_slot.get(
+            rds_booked = rds_booked_by_slot.get(
                 slot_id_key,
                 rds_booked_by_slot.get(slot_time_key, 0),
             )
-            slot["capacitySyncPending"] = dynamodb_booked != booked
-
-            # Write the reconciled count back so the template reads
-            # the same corrected value from s.bookedCount.
+            slot["capacitySyncPending"] = dynamodb_booked != rds_booked
+            slot["rdsBookedCount"] = rds_booked
+            booked = dynamodb_booked
             slot["bookedCount"] = booked
 
 
@@ -2139,9 +2137,6 @@ def schedule():
             elif slot.get("isBlackout"):
 
                 slot["status"] = "BLACKOUT"
-
-            elif slot.get("capacitySyncPending"):
-                slot["status"] = "CAPACITY_SYNC_PENDING"
 
             elif overlapping_blackout:
 

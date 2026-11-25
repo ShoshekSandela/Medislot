@@ -140,11 +140,11 @@
     {% set capacity=s.capacity|int %}
     {% set blackout=s.isBlackout %}
     {% set doctor_cancelled=s.status=='SLOT_CANCELLED_BY_DOCTOR' %}
-    {% set sync_pending=s.capacitySyncPending %}
-    <article class="week-slot {{ 'slot-cancelled' if doctor_cancelled else ('sync-pending' if sync_pending else ('blackout' if blackout else ('slot-full' if capacity and booked>=capacity else ('slot-partial' if booked>0 else 'slot-open')))) }}">
+    {% set sync_pending=false %}
+    <article class="week-slot {{ 'slot-cancelled' if doctor_cancelled else ('blackout' if blackout else ('slot-full' if capacity and booked>=capacity else ('slot-partial' if booked>0 else 'slot-open'))) }}">
      <strong>{{ time_display(s.slotTime[11:]) }} – {{ time_display(s.endTime[11:]) if s.endTime else '' }}</strong>
      <small>{{ type_map.get(s.consultationTypeId|string,{}).get('type_name','Consultation') }}</small>
-     <span>{{ 'SLOT CANCELLED BY DOCTOR' if doctor_cancelled else ('CAPACITY SYNC PENDING' if sync_pending else ('Blackout' if blackout else ('Fully booked' if capacity and booked>=capacity else ('Partially booked' if booked>0 else 'Open')))) }} · {{ booked }}/{{ capacity }}</span>
+     <span>{{ 'SLOT CANCELLED BY DOCTOR' if doctor_cancelled else ('Blackout' if blackout else ('Fully booked' if capacity and booked>=capacity else ('Partially booked' if booked>0 else 'Open'))) }} · {{ booked }}/{{ capacity }}</span>
     </article>
    {% else %}<p class="day-empty">No slots</p>{% endfor %}
    {% for b in sch.get('blackouts',[]) %}
@@ -167,9 +167,9 @@
    {% set capacity=s.capacity|int %}
    {% set is_blackout=s.isBlackout %}
    {% set doctor_cancelled=s.status=='SLOT_CANCELLED_BY_DOCTOR' %}
-   {% set sync_pending=s.capacitySyncPending %}
-   {% set status='SLOT CANCELLED BY DOCTOR' if doctor_cancelled else ('CAPACITY SYNC PENDING' if sync_pending else ('Blackout' if is_blackout else ('Fully booked' if capacity and booked>=capacity else ('Partially booked' if booked>0 else 'Open')))) %}
-   {% set status_class='slot-cancelled' if doctor_cancelled else ('sync-pending' if sync_pending else ('blackout' if is_blackout else ('slot-full' if capacity and booked>=capacity else ('slot-partial' if booked>0 else 'slot-open')))) %}
+   {% set sync_pending=false %}
+   {% set status='SLOT CANCELLED BY DOCTOR' if doctor_cancelled else ('Blackout' if is_blackout else ('Fully booked' if capacity and booked>=capacity else ('Partially booked' if booked>0 else 'Open'))) %}
+   {% set status_class='slot-cancelled' if doctor_cancelled else ('blackout' if is_blackout else ('slot-full' if capacity and booked>=capacity else ('slot-partial' if booked>0 else 'slot-open'))) %}
    {% set typ=type_map.get(s.consultationTypeId|string,{}) %}
    {% set booked_patients=appts|selectattr('slot_id','equalto',s.slotId)|list %}
    <article class="schedule-slot-card {{ status_class }}">
