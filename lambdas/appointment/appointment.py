@@ -25,6 +25,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import boto3
 import pymysql
 from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
@@ -431,10 +432,53 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
         if canonical_doctor_id is None or canonical_slot_time is None:
             raise ApiError(409, "The appointment slot has an invalid DynamoDB key")
 
-        transaction_key = {
-            "doctorId": {"S": str(canonical_doctor_id)},
-            "slotTime": {"S": str(canonical_slot_time)},
+        # Build the low-level transaction key from the live table key schema,
+        # rather than assuming that the CloudFormation template and deployed
+        # table are identical.  The strongly-consistent GetItem above proves
+        # the logical key values; describe_table supplies the exact live key
+        # attribute names and TypeSerializer supplies their DynamoDB types.
+        # This also makes a schema drift visible in CloudWatch instead of
+        # sending a hard-coded key that DynamoDB may reject.
+        describe_table = getattr(client, "describe_table", None)
+        if callable(describe_table):
+            table_description = describe_table(TableName=slots_table.name)["Table"]
+            live_key_schema = table_description.get("KeySchema", [])
+        else:
+            # Lightweight test doubles may not implement DescribeTable. The
+            # production Lambda client always does; retain the declared schema
+            # for isolated unit tests.
+            live_key_schema = [
+                {"AttributeName": "doctorId", "KeyType": "HASH"},
+                {"AttributeName": "slotTime", "KeyType": "RANGE"},
+            ]
+        key_values_by_name = {
+            "doctorId": canonical_doctor_id,
+            "slotTime": canonical_slot_time,
         }
+        serializer = TypeSerializer()
+        transaction_key = {}
+        for key_definition in live_key_schema:
+            key_name = key_definition["AttributeName"]
+            if key_name not in key_values_by_name:
+                raise ApiError(
+                    409,
+                    "The deployed slots table key schema is incompatible with appointment slots",
+                )
+            transaction_key[key_name] = serializer.serialize(key_values_by_name[key_name])
+
+        expected_key_names = {"doctorId", "slotTime"}
+        actual_key_names = set(transaction_key)
+        if actual_key_names != expected_key_names:
+            logger.error(
+                "Slots table key schema mismatch table=%s expected=%s actual=%s",
+                slots_table.name,
+                sorted(expected_key_names),
+                sorted(actual_key_names),
+            )
+            raise ApiError(
+                409,
+                "The deployed slots table key schema does not match the MediSlot slot identity",
+            )
         update = {
             "Update": {
                 "TableName": slots_table.name,
