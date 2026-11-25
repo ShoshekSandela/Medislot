@@ -282,7 +282,7 @@ def release_reserved_seat(doctor_id, slot_time, slot_id):
 
 
 def booked_count_value(value):
-    """Read current numeric counters and legacy map/list counters safely."""
+    """Read numeric, legacy document, and raw DynamoDB AttributeValue counters."""
     if value is None:
         return 0
     if isinstance(value, bool):
@@ -290,8 +290,14 @@ def booked_count_value(value):
     if isinstance(value, (int, float, Decimal)):
         return max(0, int(value))
     if isinstance(value, dict):
-        # Support common legacy map shapes before falling back to a map of
-        # appointment IDs, where each entry represents one occupied seat.
+        # Also tolerate raw AttributeValue-shaped documents. These can exist
+        # when older code wrote a low-level DynamoDB map into a document field.
+        if set(value) == {"N"}:
+            return booked_count_value(value["N"])
+        if set(value) == {"M"}:
+            return booked_count_value(value["M"])
+        if set(value) == {"L"}:
+            return booked_count_value(value["L"])
         for key in ("count", "booked", "bookedCount", "booked_count", "total"):
             if key in value:
                 return booked_count_value(value[key])
@@ -431,14 +437,32 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
         except ClientError as error:
             code = error.response.get("Error", {}).get("Code")
             if code == "TransactionCanceledException":
+                # AWS includes one cancellation reason per transaction action.
+                # Log the actual reason and the exact composite key; otherwise
+                # ValidationError is indistinguishable from a normal CAS race.
+                reasons = error.response.get("CancellationReasons") or []
+                safe_reasons = [
+                    {"Code": reason.get("Code"), "Message": reason.get("Message")}
+                    for reason in reasons
+                ]
+                logger.error(
+                    "Seat-release transaction cancelled appointment_id=%s doctor_id=%s "
+                    "slot_time=%r slot_id=%r attempt=%s reasons=%s",
+                    appointment_id, doctor_id, slot_time, slot_id,
+                    attempt + 1, json.dumps(safe_reasons, default=str),
+                )
                 marker_result = idempotency_table.get_item(
                     Key={"idemKey": marker}, ConsistentRead=True
                 )
                 if marker_result.get("Item"):
                     return False
-                if attempt < 4:
+                # Only conditional conflicts are retryable. ValidationError is
+                # a schema/key/expression defect and retrying it five times just
+                # hides the useful failure while leaving RDS/DynamoDB divergent.
+                codes = {reason.get("Code") for reason in reasons if reason.get("Code")}
+                if codes and codes <= {"None", "ConditionalCheckFailed"} and attempt < 4:
                     logger.info(
-                        "Retrying seat release after concurrent slot update "
+                        "Retrying seat release after conditional slot update conflict "
                         "appointment_id=%s attempt=%s",
                         appointment_id, attempt + 1,
                     )

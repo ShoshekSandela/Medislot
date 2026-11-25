@@ -62,7 +62,7 @@ def response(status, data):
 
 
 def booked_count_value(value):
-    """Convert numeric and legacy map/list bookedCount values to a seat count."""
+    """Convert numeric, legacy document, and raw AttributeValue counters."""
     if value is None:
         return 0
     if isinstance(value, bool):
@@ -70,6 +70,12 @@ def booked_count_value(value):
     if isinstance(value, (int, float)):
         return max(0, int(value))
     if isinstance(value, dict):
+        if set(value) == {"N"}:
+            return booked_count_value(value["N"])
+        if set(value) == {"M"}:
+            return booked_count_value(value["M"])
+        if set(value) == {"L"}:
+            return booked_count_value(value["L"])
         for key in ("count", "booked", "bookedCount", "booked_count", "total"):
             if key in value:
                 return booked_count_value(value[key])
@@ -1726,20 +1732,21 @@ def public_doctor_slots(connection, doctor_id, query_params):
     with connection.cursor() as cursor:
         cursor.execute(
             """
-            SELECT start_at_ist, COUNT(*) AS booked_count
+            SELECT slot_id, COUNT(*) AS booked_count
             FROM appointments
             WHERE doctor_id = %s
               AND status = 'BOOKED'
               AND start_at_ist >= %s
               AND start_at_ist < %s
-            GROUP BY start_at_ist
+            GROUP BY slot_id
             """,
             (int(doctor_id), datetime.combine(start_date, datetime.min.time()),
              datetime.combine(end_date + timedelta(days=1), datetime.min.time())),
         )
-        rds_booked_by_time = {
-            str(row["start_at_ist"])[:19].replace(" ", "T"): int(row["booked_count"])
+        rds_booked_by_slot = {
+            str(row["slot_id"]): int(row["booked_count"])
             for row in cursor.fetchall()
+            if row.get("slot_id")
         }
 
     now_ist = datetime.now(IST).replace(tzinfo=None).isoformat(timespec="seconds")
@@ -1756,8 +1763,11 @@ def public_doctor_slots(connection, doctor_id, query_params):
             continue
 
         slot_status = str(item.get("status", "")).upper()
-        slot_time_key = str(item.get("slotTime", ""))[:19]
-        rds_booked = rds_booked_by_time.get(slot_time_key, 0)
+        # Match RDS bookings to the exact materialized slot identity. Matching
+        # only by start time incorrectly combines different hospitals or
+        # consultation types that happen to begin at the same time.
+        slot_identity = str(item.get("slotId") or "")
+        rds_booked = rds_booked_by_slot.get(slot_identity, 0)
         if rds_booked != booked:
             logger.warning(
                 "Hiding slot while RDS/DynamoDB seat counts differ doctor_id=%s "
