@@ -1856,20 +1856,20 @@ def public_doctor_slots(connection, doctor_id, query_params):
         slot_time_key = str(item.get("slotTime", ""))[:19]
         rds_booked = rds_booked_by_time.get(slot_time_key, 0)
         if rds_booked != booked:
-            # RDS is the system of record for appointment state. Use its count
-            # as the authoritative value instead of hiding the slot. Hiding was
-            # the previous behaviour but it caused a cancelled slot to become
-            # invisible to patients even though the seat was genuinely free —
-            # the DynamoDB counter may lag RDS after a cancellation (especially
-            # when the bookedCount was a legacy Map type and the transactional
-            # update failed with ValidationError). Showing the slot with the
-            # RDS-derived count lets patients book the freed seat immediately.
-            logger.info(
-                "Slot count mismatch corrected by RDS doctor_id=%s "
+            # Do not publish a slot as available when the patient-facing RDS
+            # appointment count and DynamoDB's atomic seat counter disagree.
+            # Booking reserves capacity in DynamoDB, so substituting the RDS
+            # count here could show a free seat that reserve_slot() must reject.
+            # A successful cancellation updates RDS first and then releases the
+            # DynamoDB seat transactionally; once both agree, the slot appears
+            # again automatically. If they disagree, keep it hidden until the
+            # cancellation retry/recovery completes.
+            logger.warning(
+                "Slot availability withheld until counts reconcile doctor_id=%s "
                 "slot_time=%s rds_booked=%s dynamodb_booked=%s",
                 doctor_id, slot_time_key, rds_booked, booked,
             )
-            booked = rds_booked
+            continue
 
         # Older fully-booked records may retain a full-state status even after
         # cancellation releases a seat. Treat them as bookable when capacity is
