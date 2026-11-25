@@ -450,18 +450,60 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
             )
             return released
         except ClientError as error:
-            code = error.response.get("Error", {}).get("Code")
-            if code == "TransactionCanceledException":
+            error_response = error.response or {}
+            error_code = (error_response.get("Error") or {}).get("Code")
+            cancellation_reasons = error_response.get("CancellationReasons") or []
+
+            # Keep the complete DynamoDB cancellation reasons in CloudWatch.
+            # The top-level TransactionCanceledException alone does not tell
+            # us whether this was a CAS conflict, a duplicate marker, or an
+            # invalid transaction request.
+            logger.error(
+                "Seat release DynamoDB transaction failed "
+                "appointment_id=%s error_code=%s error_message=%s "
+                "cancellation_reasons=%s",
+                appointment_id,
+                error_code,
+                (error_response.get("Error") or {}).get("Message"),
+                json.dumps(cancellation_reasons, default=str),
+            )
+
+            if error_code == "TransactionCanceledException":
                 marker_result = idempotency_table.get_item(
                     Key={"idemKey": marker}, ConsistentRead=True
                 )
                 if marker_result.get("Item"):
                     return False
-                if attempt < 4:
+
+                reason_codes = {
+                    reason.get("Code")
+                    for reason in cancellation_reasons
+                    if isinstance(reason, dict)
+                }
+
+                # ValidationError is a malformed/invalid transaction
+                # operation, not a concurrency conflict. Retrying the same
+                # request cannot repair it; surface it with its full reason.
+                if "ValidationError" in reason_codes:
+                    raise
+
+                # Retry only conditions that can legitimately change after
+                # re-reading the slot. Do not retry validation or other
+                # permanent transaction failures.
+                retryable_codes = {
+                    "ConditionalCheckFailed",
+                    "TransactionConflict",
+                    "ProvisionedThroughputExceeded",
+                    "ThrottlingError",
+                }
+                if reason_codes.intersection(retryable_codes) and attempt < 4:
                     logger.info(
-                        "Retrying seat release after concurrent slot update "
-                        "appointment_id=%s attempt=%s",
-                        appointment_id, attempt + 1,
+                        "Retrying seat release after retryable DynamoDB "
+                        "transaction conflict appointment_id=%s attempt=%s "
+                        "reasons=%s",
+                        appointment_id,
+                        attempt + 1,
+                        sorted(reason_codes),
                     )
                     continue
             raise
