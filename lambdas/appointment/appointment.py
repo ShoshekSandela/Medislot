@@ -429,14 +429,64 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
             )
             return released
         except ClientError as error:
-            code = error.response.get("Error", {}).get("Code")
+            error_info = error.response.get("Error", {})
+            code = error_info.get("Code")
             if code == "TransactionCanceledException":
+                # AWS includes one cancellation reason per TransactItems entry.
+                # Log the operation-level reason: the top-level exception message
+                # alone (for example "[ValidationError, None]") is not enough to
+                # diagnose a production data/key/expression problem.
+                reasons = error.response.get("CancellationReasons") or []
+                for operation_index, reason in enumerate(reasons):
+                    reason = reason or {}
+                    logger.error(
+                        "DynamoDB seat-release transaction cancelled "
+                        "appointment_id=%s operation=%s code=%s message=%s",
+                        appointment_id,
+                        operation_index,
+                        reason.get("Code"),
+                        reason.get("Message"),
+                    )
+                logger.error(
+                    "DynamoDB seat-release transaction context "
+                    "appointment_id=%s doctor_id=%s slot_time=%s "
+                    "slots_table=%s idempotency_table=%s "
+                    "counter_attribute_present=%s counter_python_type=%s "
+                    "seat_revision_present=%s seat_revision_python_type=%s "
+                    "aws_error=%s",
+                    appointment_id,
+                    doctor_id,
+                    slot_time,
+                    slots_table.name,
+                    idempotency_table.name,
+                    has_counter,
+                    type(raw_booked).__name__,
+                    "seatRevision" in slot,
+                    type(slot.get("seatRevision")).__name__,
+                    error_info.get("Message"),
+                )
+
                 marker_result = idempotency_table.get_item(
                     Key={"idemKey": marker}, ConsistentRead=True
                 )
                 if marker_result.get("Item"):
                     return False
-                if attempt < 4:
+
+                # Only retry contention. A ValidationError is deterministic for
+                # the same request and retrying it five times only adds latency.
+                reason_codes = {
+                    (reason or {}).get("Code") for reason in reasons
+                }
+                retryable = (
+                    not reason_codes
+                    or reason_codes.intersection({
+                        "ConditionalCheckFailed",
+                        "TransactionConflict",
+                        "ThrottlingError",
+                        "ProvisionedThroughputExceeded",
+                    })
+                )
+                if retryable and attempt < 4:
                     logger.info(
                         "Retrying seat release after concurrent slot update "
                         "appointment_id=%s attempt=%s",
