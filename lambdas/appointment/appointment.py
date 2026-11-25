@@ -422,13 +422,23 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
             **condition_values,
             ":new_status": {"S": next_status},
         }
+        # Build the transaction key from the canonical key values returned by
+        # the strongly-consistent read of this exact DynamoDB item. This avoids
+        # using appointment/RDS values (which may be formatted differently)
+        # when constructing the low-level TransactWriteItems key.
+        canonical_doctor_id = slot.get("doctorId")
+        canonical_slot_time = slot.get("slotTime")
+        if canonical_doctor_id is None or canonical_slot_time is None:
+            raise ApiError(409, "The appointment slot has an invalid DynamoDB key")
+
+        transaction_key = {
+            "doctorId": {"S": str(canonical_doctor_id)},
+            "slotTime": {"S": str(canonical_slot_time)},
+        }
         update = {
             "Update": {
                 "TableName": slots_table.name,
-                "Key": {
-                    "doctorId": {"S": str(doctor_id)},
-                    "slotTime": {"S": slot_time},
-                },
+                "Key": transaction_key,
                 "UpdateExpression": update_expr,
                 "ConditionExpression": cond_expr,
                 "ExpressionAttributeNames": {
@@ -441,6 +451,16 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
         }
 
         try:
+            logger.info(
+                "Submitting cancellation seat-release transaction "
+                "appointment_id=%s slots_table=%s key_attributes=%s "
+                "doctor_id_type=%s slot_time_type=%s",
+                appointment_id,
+                slots_table.name,
+                sorted(transaction_key.keys()),
+                type(canonical_doctor_id).__name__,
+                type(canonical_slot_time).__name__,
+            )
             client.transact_write_items(TransactItems=[update, marker_put])
             logger.info(
                 "Cancelled appointment seat released appointment_id=%s doctor_id=%s "
