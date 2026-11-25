@@ -2077,7 +2077,9 @@ def schedule():
 
                     "start_time",
 
-                    "start"
+                    "start",
+
+                    "start_at_ist"
 
                 )
 
@@ -2091,7 +2093,9 @@ def schedule():
 
                     "end_time",
 
-                    "end"
+                    "end",
+
+                    "end_at_ist"
 
                 )
 
@@ -2121,7 +2125,7 @@ def schedule():
 
             slot["isBlackout"] = bool(
 
-                overlapping_blackout
+                slot.get("isBlackout") is True or overlapping_blackout
 
             )
 
@@ -2131,6 +2135,10 @@ def schedule():
                 "SLOT_CANCELLED_BY_DOCTOR", "CANCELLED"
             }:
                 slot["status"] = "SLOT_CANCELLED_BY_DOCTOR"
+
+            elif slot.get("isBlackout"):
+
+                slot["status"] = "BLACKOUT"
 
             elif slot.get("capacitySyncPending"):
                 slot["status"] = "CAPACITY_SYNC_PENDING"
@@ -2201,6 +2209,8 @@ def schedule():
 
                 or blackout.get("start")
 
+                or blackout.get("start_at_ist")
+
             )
 
 
@@ -2212,6 +2222,8 @@ def schedule():
                 or blackout.get("end_time")
 
                 or blackout.get("end")
+
+                or blackout.get("end_at_ist")
 
             )
 
@@ -2233,7 +2245,9 @@ def schedule():
 
                     "start_time",
 
-                    "start"
+                    "start",
+
+                    "start_at_ist"
 
                 ) or time.min,
 
