@@ -56,7 +56,11 @@ class FakeSlotTable:
             if (
                 self.item.get("seatRevision", 0) != values[":revision"]
                 or self.item["bookedCount"] >= self.item["capacity"]
-                or self.item["status"] != values[":available"]
+                or self.item["status"] not in {
+                    values[":available"], values[":open"], values[":partial"],
+                    values[":booked"], values[":full"], values[":full_booked"],
+                    values[":fully_booked"],
+                }
                 or self.item["isBlackout"] != values[":false"]
             ):
                 raise ClientError(
@@ -64,6 +68,7 @@ class FakeSlotTable:
                     "UpdateItem",
                 )
             self.item["bookedCount"] = values[":next_booked"]
+            self.item["status"] = values[":next_status"]
             self.item["seatRevision"] = values[":next_revision"]
             return {"Attributes": dict(self.item)}
 
@@ -192,6 +197,7 @@ def test_cancelled_seat_release_converts_legacy_map_counter_once(monkeypatch):
                 "doctorId": "42",
                 "slotTime": "2026-12-01T09:00:00+05:30",
                 "slotId": "42#7#3#2026-12-01T09:00:00+05:30",
+                "capacity": 3,
                 "bookedCount": {"appointment-1": True, "appointment-2": True},
                 "status": "FULLY_BOOKED",
                 "version": {"legacy": 2},
@@ -261,7 +267,7 @@ def test_cancelled_seat_release_converts_legacy_map_counter_once(monkeypatch):
     )
     assert released is True
     assert slots.item["bookedCount"] == 1
-    assert slots.item["status"] == "AVAILABLE"
+    assert slots.item["status"] == "PARTIALLY_BOOKED"
     assert slots.item["version"] == {"legacy": 2}
     assert slots.item["seatRevision"] == 1
 
@@ -348,3 +354,16 @@ def test_doctor_cancellation_releases_count_but_keeps_slot_blocked(monkeypatch):
     ) is False
     assert slots.item["bookedCount"] == 1
     assert slots.item["status"] == "SLOT_CANCELLED_BY_DOCTOR"
+
+
+@pytest.mark.parametrize(
+    ("booked", "capacity", "expected"),
+    [
+        (0, 1, "AVAILABLE"),
+        (1, 1, "FULLY_BOOKED"),
+        (1, 3, "PARTIALLY_BOOKED"),
+        (3, 3, "FULLY_BOOKED"),
+    ],
+)
+def test_slot_status_is_derived_from_booked_count(booked, capacity, expected):
+    assert appointment.slot_status_for_counts(booked, capacity) == expected

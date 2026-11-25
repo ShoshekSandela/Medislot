@@ -135,21 +135,24 @@
           </div>
           <div class="patient-slot-grid" id="patient-slot-grid">
             {% for slot in display_slots %}
-            <article class="slot-card patient-slot-card" data-consultation-type="{{ slot.consultationTypeId }}">
+            {% set slot_status = slot.status|default('AVAILABLE')|upper %}
+            {% set status_label = 'Open' if slot_status in ['AVAILABLE', 'OPEN'] else ('Partially booked' if slot_status == 'PARTIALLY_BOOKED' else ('Fully booked' if slot_status in ['FULL', 'FULL_BOOKED', 'FULLY_BOOKED', 'BOOKED'] else ('Capacity sync pending' if slot_status == 'CAPACITY_SYNC_PENDING' else ('Blackout' if slot_status == 'BLACKOUT' else 'Unavailable')))) %}
+            {% set status_class = 'good' if slot_status in ['AVAILABLE', 'OPEN'] else ('warning' if slot_status in ['PARTIALLY_BOOKED', 'CAPACITY_SYNC_PENDING'] else ('full' if slot_status in ['FULL', 'FULL_BOOKED', 'FULLY_BOOKED', 'BOOKED'] else 'muted-pill')) %}
+            <article class="slot-card patient-slot-card patient-slot-{{ status_class }}" data-consultation-type="{{ slot.consultationTypeId }}">
               <div class="patient-slot-heading">
                 <div class="patient-slot-time">
                   <strong>{{ slot.display_time }}</strong>
                   <span>{{ slot.display_date }} · IST</span>
                 </div>
-                <span class="status-pill good">Available</span>
+                <span class="status-pill {{ status_class }}">{{ status_label }}</span>
               </div>
               <div class="patient-slot-details">
                 <span><strong>Type:</strong> {{ slot.consultation_type_name }}</span>
                 {% if slot.duration_minutes %}<span><strong>Duration:</strong> {{ slot.duration_minutes }} minutes</span>{% endif %}
                 <span><strong>Fee:</strong> ₹{{ slot.consultationFee }}</span>
-                <span><strong>Seats:</strong> {{ slot.freeSeats }} available</span>
+                <span><strong>Seats:</strong> {{ slot.freeSeats|int }} available of {{ slot.capacity|int }}</span>
               </div>
-              {% if slot.freeSeats|int > 0 and slot.slotId and slot.slotTime %}
+              {% if slot.canBook and slot.freeSeats|int > 0 and slot.slotId and slot.slotTime %}
               <form method="post" action="{{ url_for('patient.book_slot') }}" class="patient-book-slot-form" onsubmit="return confirm('Book this consultation slot?');">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <input type="hidden" name="doctor_id" value="{{ selected_doctor.doctor_id }}">
@@ -160,14 +163,14 @@
                 <button class="btn primary" type="submit">Book this slot</button>
               </form>
               {% else %}
-              <p class="muted">Booking is unavailable for this slot.</p>
+              <p class="muted">{% if slot_status == 'CAPACITY_SYNC_PENDING' %}Availability is being synchronized. Refresh shortly before booking.{% elif slot_status in ['FULL', 'FULL_BOOKED', 'FULLY_BOOKED', 'BOOKED'] %}This slot is fully booked. It remains visible, but cannot be booked right now.{% elif slot_status == 'BLACKOUT' %}The doctor is unavailable during this time.{% else %}Booking is unavailable for this slot.{% endif %}</p>
               {% endif %}
             </article>
             {% endfor %}
           </div>
           <p class="muted patient-no-filter-results" id="patient-slot-no-results" hidden>No slots are available for this consultation type.</p>
           {% else %}
-          <div class="empty-state compact-empty"><div class="empty-icon">◷</div><h3>No available slots</h3><p>There are no free slots in this date range. Try another date range.</p></div>
+          <div class="empty-state compact-empty"><div class="empty-icon">◷</div><h3>No slots generated</h3><p>There are no generated consultation slots for this date. Try another date.</p></div>
           {% endif %}
           <div class="patient-back-link"><a class="btn secondary small-btn" href="#find-doctors">← Back to doctor search</a></div>
         </section>

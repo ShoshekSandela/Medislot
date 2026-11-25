@@ -25,7 +25,6 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import boto3
 import pymysql
 from boto3.dynamodb.conditions import Key
-from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
@@ -204,25 +203,36 @@ def get_slot(doctor_id, slot_time):
 def reserve_slot(doctor_id, slot_time):
     """Reserve exactly one seat using optimistic concurrency and bounded retry."""
     retries = 0
+    allowed_statuses = {
+        "AVAILABLE", "OPEN", "PARTIALLY_BOOKED", "BOOKED",
+        "FULL", "FULL_BOOKED", "FULLY_BOOKED",
+    }
     for attempt in range(MAX_RETRIES):
         slot = get_slot(doctor_id, slot_time)
-        if str(slot.get("status", "")).upper() != "AVAILABLE" or slot.get("isBlackout") is True:
-            raise ApiError(409, "This appointment slot is not available")
+        current_status = str(slot.get("status", "AVAILABLE")).upper()
+        if current_status not in allowed_statuses or slot.get("isBlackout") is True:
+            raise ApiError(409, "This appointment slot is blocked or unavailable")
 
         capacity = int(slot.get("capacity", 1))
         booked = booked_count_value(slot.get("bookedCount", 0))
         revision = int(slot.get("seatRevision", 0) or 0)
-        if booked >= capacity:
+        if capacity < 1 or booked >= capacity:
             emit_metric("BookingConflictRetries", retries)
             raise ApiError(409, "This appointment slot is full")
 
+        next_booked = booked + 1
+        next_status = slot_status_for_counts(next_booked, capacity)
         try:
             slots_table.update_item(
                 Key={"doctorId": str(doctor_id), "slotTime": slot_time},
-                UpdateExpression="SET #booked = :next_booked, #revision = :next_revision",
+                UpdateExpression=(
+                    "SET #booked = :next_booked, #status = :next_status, "
+                    "#revision = :next_revision"
+                ),
                 ConditionExpression=(
                     "(attribute_not_exists(#revision) OR #revision = :revision) "
-                    "AND #status = :available AND #blackout = :false"
+                    "AND #status IN (:available, :open, :partial, :booked, :full, :full_booked, :fully_booked) "
+                    "AND (attribute_not_exists(#blackout) OR #blackout = :false)"
                 ),
                 ExpressionAttributeNames={
                     "#booked": "bookedCount",
@@ -231,10 +241,17 @@ def reserve_slot(doctor_id, slot_time):
                     "#blackout": "isBlackout",
                 },
                 ExpressionAttributeValues={
-                    ":next_booked": booked + 1,
+                    ":next_booked": next_booked,
                     ":revision": revision,
                     ":next_revision": revision + 1,
+                    ":next_status": next_status,
                     ":available": "AVAILABLE",
+                    ":open": "OPEN",
+                    ":partial": "PARTIALLY_BOOKED",
+                    ":booked": "BOOKED",
+                    ":full": "FULL",
+                    ":full_booked": "FULL_BOOKED",
+                    ":fully_booked": "FULLY_BOOKED",
                     ":false": False,
                 },
             )
@@ -265,16 +282,23 @@ def release_reserved_seat(doctor_id, slot_time, slot_id):
     revision = int(slot.get("seatRevision", 0) or 0)
     if booked <= 0:
         return
+    next_booked = max(0, booked - 1)
     slots_table.update_item(
         Key={"doctorId": str(doctor_id), "slotTime": slot_time},
-        UpdateExpression="SET #booked = :next_booked, #revision = :next_revision",
+        UpdateExpression=(
+            "SET #booked = :next_booked, #status = :next_status, "
+            "#revision = :next_revision"
+        ),
         ConditionExpression=(
             "slotId = :slot_id AND "
             "(attribute_not_exists(#revision) OR #revision = :revision)"
         ),
-        ExpressionAttributeNames={"#booked": "bookedCount", "#revision": "seatRevision"},
+        ExpressionAttributeNames={
+            "#booked": "bookedCount", "#status": "status", "#revision": "seatRevision"
+        },
         ExpressionAttributeValues={
-            ":next_booked": booked - 1,
+            ":next_booked": next_booked,
+            ":next_status": slot_status_for_counts(next_booked, slot.get("capacity", 1)),
             ":next_revision": revision + 1,
             ":revision": revision,
             ":slot_id": slot_id,
@@ -306,6 +330,17 @@ def booked_count_value(value):
         return max(0, int(value))
     except (TypeError, ValueError):
         raise ValueError("Unsupported bookedCount value")
+
+
+def slot_status_for_counts(booked, capacity):
+    """Return the persisted slot state from the numeric seat counters."""
+    booked = max(0, int(booked))
+    capacity = max(1, int(capacity))
+    if booked >= capacity:
+        return "FULLY_BOOKED"
+    if booked > 0:
+        return "PARTIALLY_BOOKED"
+    return "AVAILABLE"
 
 
 def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, cancellation_type="PATIENT"):
@@ -346,11 +381,18 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
         # Some older slot records persist a full-state label. Once a seat is
         # released, make those slots bookable again. Never reopen blackout,
         # inactive, or doctor-cancelled slots.
-        reopenable_statuses = {"AVAILABLE", "FULL", "FULLY_BOOKED", "BOOKED"}
+        reopenable_statuses = {
+            "AVAILABLE", "OPEN", "FULL", "FULL_BOOKED",
+            "FULLY_BOOKED", "BOOKED", "PARTIALLY_BOOKED",
+        }
+        capacity = max(1, int(slot.get("capacity", 1) or 1))
         if str(cancellation_type).upper() == "DOCTOR":
             next_status = "SLOT_CANCELLED_BY_DOCTOR"
+        elif current_status in reopenable_statuses:
+            next_status = slot_status_for_counts(max(0, booked - 1), capacity)
         else:
-            next_status = "AVAILABLE" if current_status in reopenable_statuses else current_status
+            # Never reopen a blackout, inactive, or doctor-cancelled slot.
+            next_status = current_status
 
         marker_put = {
             "Put": {
@@ -432,53 +474,10 @@ def release_cancelled_seat_once(appointment_id, doctor_id, slot_time, slot_id, c
         if canonical_doctor_id is None or canonical_slot_time is None:
             raise ApiError(409, "The appointment slot has an invalid DynamoDB key")
 
-        # Build the low-level transaction key from the live table key schema,
-        # rather than assuming that the CloudFormation template and deployed
-        # table are identical.  The strongly-consistent GetItem above proves
-        # the logical key values; describe_table supplies the exact live key
-        # attribute names and TypeSerializer supplies their DynamoDB types.
-        # This also makes a schema drift visible in CloudWatch instead of
-        # sending a hard-coded key that DynamoDB may reject.
-        describe_table = getattr(client, "describe_table", None)
-        if callable(describe_table):
-            table_description = describe_table(TableName=slots_table.name)["Table"]
-            live_key_schema = table_description.get("KeySchema", [])
-        else:
-            # Lightweight test doubles may not implement DescribeTable. The
-            # production Lambda client always does; retain the declared schema
-            # for isolated unit tests.
-            live_key_schema = [
-                {"AttributeName": "doctorId", "KeyType": "HASH"},
-                {"AttributeName": "slotTime", "KeyType": "RANGE"},
-            ]
-        key_values_by_name = {
-            "doctorId": canonical_doctor_id,
-            "slotTime": canonical_slot_time,
+        transaction_key = {
+            "doctorId": {"S": str(canonical_doctor_id)},
+            "slotTime": {"S": str(canonical_slot_time)},
         }
-        serializer = TypeSerializer()
-        transaction_key = {}
-        for key_definition in live_key_schema:
-            key_name = key_definition["AttributeName"]
-            if key_name not in key_values_by_name:
-                raise ApiError(
-                    409,
-                    "The deployed slots table key schema is incompatible with appointment slots",
-                )
-            transaction_key[key_name] = serializer.serialize(key_values_by_name[key_name])
-
-        expected_key_names = {"doctorId", "slotTime"}
-        actual_key_names = set(transaction_key)
-        if actual_key_names != expected_key_names:
-            logger.error(
-                "Slots table key schema mismatch table=%s expected=%s actual=%s",
-                slots_table.name,
-                sorted(expected_key_names),
-                sorted(actual_key_names),
-            )
-            raise ApiError(
-                409,
-                "The deployed slots table key schema does not match the MediSlot slot identity",
-            )
         update = {
             "Update": {
                 "TableName": slots_table.name,

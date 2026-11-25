@@ -1817,9 +1817,9 @@ def public_doctor_slots(connection, doctor_id, query_params):
         items.extend(result.get("Items", []))
 
     # RDS owns appointment state; DynamoDB owns atomic seat allocation.
-    # Do not expose a slot while the two disagree after a partial cancellation.
-    # The cancellation endpoint returns a retryable error until its atomic
-    # DynamoDB seat-release transaction has completed.
+    # Return every future generated slot, including full and blocked slots.
+    # When the two stores disagree, expose CAPACITY_SYNC_PENDING and disable
+    # booking rather than hiding the slot or advertising an unsafe free seat.
     with connection.cursor() as cursor:
         cursor.execute(
             """
@@ -1852,48 +1852,62 @@ def public_doctor_slots(connection, doctor_id, query_params):
             )
             continue
 
-        slot_status = str(item.get("status", "")).upper()
+        slot_status = str(item.get("status", "AVAILABLE")).upper()
         slot_time_key = str(item.get("slotTime", ""))[:19]
         rds_booked = rds_booked_by_time.get(slot_time_key, 0)
-        if rds_booked != booked:
-            # Do not publish a slot as available when the patient-facing RDS
-            # appointment count and DynamoDB's atomic seat counter disagree.
-            # Booking reserves capacity in DynamoDB, so substituting the RDS
-            # count here could show a free seat that reserve_slot() must reject.
-            # A successful cancellation updates RDS first and then releases the
-            # DynamoDB seat transactionally; once both agree, the slot appears
-            # again automatically. If they disagree, keep it hidden until the
-            # cancellation retry/recovery completes.
+        capacity_sync_pending = rds_booked != booked
+
+        # Keep every generated slot visible, including fully booked slots.
+        # A cross-store mismatch is visible as SYNC_PENDING but never bookable.
+        if capacity_sync_pending:
             logger.warning(
-                "Slot availability withheld until counts reconcile doctor_id=%s "
-                "slot_time=%s rds_booked=%s dynamodb_booked=%s",
+                "Slot capacity sync pending doctor_id=%s slot_time=%s "
+                "rds_booked=%s dynamodb_booked=%s",
                 doctor_id, slot_time_key, rds_booked, booked,
             )
-            continue
+            booked = rds_booked
 
-        # Older fully-booked records may retain a full-state status even after
-        # cancellation releases a seat. Treat them as bookable when capacity is
-        # available, but continue to exclude terminal/blocked states.
-        # Older records may use a descriptive booking status. The numeric
-        # bookedCount/capacity values are authoritative for remaining seats;
-        # only terminal and blocked statuses should hide the slot.
-        if slot_status not in {
-            "AVAILABLE", "OPEN", "FULL", "FULL_BOOKED",
-            "FULLY_BOOKED", "BOOKED", "PARTIALLY_BOOKED",
-        }:
-            continue
-        if item.get("isBlackout") is True or booked >= capacity:
-            continue
-        item["status"] = "AVAILABLE"
         if str(item.get("slotTime", ""))[:19] <= now_ist:
             continue
 
-        # Return a numeric counter even for legacy Map/List records. The
-        # cancellation Lambda repairs the stored counter atomically; normalising
-        # here keeps the patient-facing profile consistent during migration.
+        blocked_statuses = {
+            "BLACKOUT", "INACTIVE", "SLOT_CANCELLED_BY_DOCTOR", "CANCELLED",
+        }
+        supported_statuses = {
+            "AVAILABLE", "OPEN", "PARTIALLY_BOOKED", "BOOKED",
+            "FULL", "FULL_BOOKED", "FULLY_BOOKED", "CAPACITY_SYNC_PENDING",
+            *blocked_statuses,
+        }
+        if slot_status not in supported_statuses:
+            logger.warning(
+                "Ignoring slot with unsupported state doctor_id=%s slot_time=%s status=%s",
+                doctor_id, slot_time_key, slot_status,
+            )
+            continue
+        if item.get("isBlackout") is True:
+            slot_status = "BLACKOUT"
+        elif slot_status in blocked_statuses:
+            pass
+        elif capacity_sync_pending:
+            slot_status = "CAPACITY_SYNC_PENDING"
+        elif booked >= capacity:
+            slot_status = "FULLY_BOOKED"
+        elif booked > 0:
+            slot_status = "PARTIALLY_BOOKED"
+        else:
+            slot_status = "AVAILABLE"
+
+        item["status"] = slot_status
+        item["capacitySyncPending"] = capacity_sync_pending
         item["bookedCount"] = booked
         item["capacity"] = capacity
-        item["freeSeats"] = capacity - booked
+        item["freeSeats"] = max(0, capacity - booked)
+        item["canBook"] = (
+            not capacity_sync_pending
+            and slot_status in {"AVAILABLE", "OPEN", "PARTIALLY_BOOKED"}
+            and item.get("isBlackout") is not True
+            and item["freeSeats"] > 0
+        )
         slots.append(item)
 
     slots.sort(key=lambda item: item.get("slotTime", ""))
