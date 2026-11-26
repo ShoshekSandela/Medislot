@@ -262,26 +262,24 @@
               <td><span class="status-pill {{ 'good' if status in ['UPCOMING','CONFIRMED','COMPLETED'] else 'warning' }}">{{ status|replace('_',' ')|title }}</span></td>
               <td>
                 {% if status in ['UPCOMING', 'CONFIRMED'] %}
-                  {% if a.get('_can_mark_outcome') %}
                   <div class="appointment-outcome-actions">
                     <form method="post" action="{{ url_for('doctor.appointment_outcome', appointment_id=a.appointment_id) }}" onsubmit="return confirm('Mark this appointment as completed?');">
                       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                       <input type="hidden" name="outcome" value="COMPLETED">
-                      <button class="btn secondary small-btn" type="submit">Completed</button>
+                      <button class="btn secondary small-btn" type="submit" {% if not a.get('_can_mark_outcome') %}disabled title="Available when the appointment start time is reached"{% endif %}>Completed</button>
                     </form>
                     <form method="post" action="{{ url_for('doctor.appointment_outcome', appointment_id=a.appointment_id) }}" onsubmit="return confirm('Mark this patient as no show?');">
                       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                       <input type="hidden" name="outcome" value="NO_SHOW">
-                      <button class="btn warning-ghost small-btn" type="submit">No Show</button>
+                      <button class="btn warning-ghost small-btn" type="submit" {% if not a.get('_can_mark_outcome') %}disabled title="Available when the appointment start time is reached"{% endif %}>No Show</button>
                     </form>
+                    {% if status == 'UPCOMING' or (a.get('_start_at') and a.get('_start_at') > now_ist) %}
+                    <form method="post" action="{{ url_for('doctor.cancel_appointment', appointment_id=a.appointment_id) }}" onsubmit="return confirm('Cancel this appointment? The applicable doctor cancellation refund will be recorded.');">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <button class="btn danger-ghost" type="submit">Cancel appointment</button>
+                    </form>
+                    {% endif %}
                   </div>
-                  {% endif %}
-                  {% if status == 'UPCOMING' or (a.get('_start_at') and a.get('_start_at') > now_ist) %}
-                  <form method="post" action="{{ url_for('doctor.cancel_appointment', appointment_id=a.appointment_id) }}" onsubmit="return confirm('Cancel this appointment? The applicable doctor cancellation refund will be recorded.');">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <button class="btn danger-ghost" type="submit">Cancel appointment</button>
-                  </form>
-                  {% endif %}
                 {% else %}<span class="muted">—</span>{% endif %}
               </td>
             </tr>
