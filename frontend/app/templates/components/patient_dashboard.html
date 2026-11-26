@@ -197,12 +197,12 @@
           {% if bookings is none %}
           <div class="empty-state"><div class="empty-icon">!</div><h3>Booking history could not be loaded</h3><p>Please try again. If the issue continues, contact support.</p><a class="btn secondary" href="{{ url_for('patient.booking_history') }}#booking-history">Try again</a></div>
           {% elif bookings %}
-          <nav class="patient-booking-filter-nav" aria-label="Filter booking history">
-            <button type="button" class="active" data-booking-filter="all">All</button>
-            <button type="button" data-booking-filter="confirmed">Confirmed</button>
-            <button type="button" data-booking-filter="completed">Completed</button>
-            <button type="button" data-booking-filter="no_show">No Show</button>
-            <button type="button" data-booking-filter="cancelled">Cancelled</button>
+          <nav class="patient-booking-filter-nav" aria-label="Filter booking history" role="group">
+            <button type="button" class="active" data-booking-filter="all" aria-pressed="true">All <span class="filter-count" data-booking-filter-count="all">0</span></button>
+            <button type="button" data-booking-filter="confirmed" aria-pressed="false">Confirmed <span class="filter-count" data-booking-filter-count="confirmed">0</span></button>
+            <button type="button" data-booking-filter="completed" aria-pressed="false">Completed <span class="filter-count" data-booking-filter-count="completed">0</span></button>
+            <button type="button" data-booking-filter="no_show" aria-pressed="false">No Show <span class="filter-count" data-booking-filter-count="no_show">0</span></button>
+            <button type="button" data-booking-filter="cancelled" aria-pressed="false">Cancelled <span class="filter-count" data-booking-filter-count="cancelled">0</span></button>
           </nav>
           <p class="muted patient-booking-filter-empty" data-booking-filter-empty hidden>No appointments match this status.</p>
           <div class="patient-booking-list">
@@ -284,17 +284,32 @@
   const bookingFilters=[...document.querySelectorAll('[data-booking-filter]')];
   const bookingCards=[...document.querySelectorAll('[data-booking-card]')];
   const bookingFilterEmpty=document.querySelector('[data-booking-filter-empty]');
-  bookingFilters.forEach(button=>button.addEventListener('click',()=>{
-    const selected=button.dataset.bookingFilter;
+  // Show live counts on each status tab and filter the cards in place.
+  const bookingCounts={all:bookingCards.length,confirmed:0,completed:0,no_show:0,cancelled:0};
+  bookingCards.forEach(card=>{
+    const status=card.dataset.bookingStatus;
+    if(Object.prototype.hasOwnProperty.call(bookingCounts,status)) bookingCounts[status]++;
+  });
+  Object.entries(bookingCounts).forEach(([status,count])=>{
+    const countNode=document.querySelector(`[data-booking-filter-count="${status}"]`);
+    if(countNode) countNode.textContent=String(count);
+  });
+  function applyBookingFilter(selected){
     let visible=0;
-    bookingFilters.forEach(item=>item.classList.toggle('active',item===button));
+    bookingFilters.forEach(item=>{
+      const active=item.dataset.bookingFilter===selected;
+      item.classList.toggle('active',active);
+      item.setAttribute('aria-pressed',active?'true':'false');
+    });
     bookingCards.forEach(card=>{
       const show=selected==='all'||card.dataset.bookingStatus===selected;
       card.hidden=!show;
       if(show) visible++;
     });
     if(bookingFilterEmpty) bookingFilterEmpty.hidden=visible!==0;
-  }));
+  }
+  bookingFilters.forEach(button=>button.addEventListener('click',()=>applyBookingFilter(button.dataset.bookingFilter)));
+  applyBookingFilter('all');
 
   const slotFilter=document.getElementById('patient-slot-type-filter');
   const slotCards=[...document.querySelectorAll('.patient-slot-card')];
@@ -318,8 +333,6 @@
   }
 })();
 </script>
-{% endblock %}
-
 <style>
 .patient-booking-card[hidden]{display:none!important}
 .patient-booking-actions .btn{white-space:nowrap}
@@ -335,8 +348,15 @@
 </style>
 
 <style>
-.patient-booking-filter-nav{display:flex;gap:9px;flex-wrap:wrap;margin:16px 0 20px;padding-bottom:14px;border-bottom:1px solid var(--border,rgba(255,255,255,.12))}
-.patient-booking-filter-nav button{padding:9px 15px;border-radius:10px;border:1px solid var(--border,rgba(255,255,255,.12));background:rgba(255,255,255,.04);color:var(--text,#eaf2f7);cursor:pointer}
-.patient-booking-filter-nav button.active{background:rgba(83,197,187,.16);border-color:#53c5bb;color:#53c5bb;font-weight:700}
+.patient-booking-filter-nav{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:18px 0 22px;padding:6px;border:1px solid var(--border,rgba(255,255,255,.12));border-radius:14px;background:rgba(5,18,25,.24);width:fit-content;max-width:100%}
+.patient-booking-filter-nav button{display:inline-flex;align-items:center;justify-content:center;gap:9px;min-height:40px;padding:8px 14px;border:1px solid transparent;border-radius:10px;background:transparent;color:var(--muted,#a9bdc9);font:inherit;font-size:13px;font-weight:650;white-space:nowrap;cursor:pointer;transition:background .16s ease,border-color .16s ease,color .16s ease,transform .16s ease}
+.patient-booking-filter-nav button:hover{background:rgba(255,255,255,.055);color:var(--text,#eaf2f7)}
+.patient-booking-filter-nav button:focus-visible{outline:2px solid #53c5bb;outline-offset:2px}
+.patient-booking-filter-nav button.active{background:rgba(83,197,187,.15);border-color:rgba(83,197,187,.55);color:#65d5ca;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.patient-booking-filter-nav .filter-count{display:inline-flex;align-items:center;justify-content:center;min-width:21px;height:21px;padding:0 6px;border-radius:999px;background:rgba(255,255,255,.09);color:inherit;font-size:11px;font-weight:750;font-variant-numeric:tabular-nums}
+.patient-booking-filter-nav button.active .filter-count{background:rgba(83,197,187,.22);color:#8ce5dc}
+.patient-booking-filter-empty{margin:0 0 18px;padding:18px 20px;border:1px dashed var(--border,rgba(255,255,255,.18));border-radius:12px;background:rgba(255,255,255,.025)}
 .patient-booking-filter-empty[hidden]{display:none!important}
+@media(max-width:620px){.patient-booking-filter-nav{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}.patient-booking-filter-nav button{justify-content:space-between}.patient-booking-filter-nav button:first-child{grid-column:1/-1}}
 </style>
+{% endblock %}
