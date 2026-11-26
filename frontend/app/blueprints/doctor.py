@@ -2385,7 +2385,7 @@ def schedule():
 def appointments():
     """Show the doctor's appointments grouped into Upcoming, Today, Cancelled and Refunds."""
     view = (request.args.get("view") or "upcoming").strip().lower()
-    if view not in {"upcoming", "today", "cancelled", "refunds"}:
+    if view not in {"upcoming", "today", "completed", "no_show", "cancelled", "refunds"}:
         view = "upcoming"
 
     now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
@@ -2445,14 +2445,16 @@ def appointments():
             if r["_display_status"] in {"BOOKED", "CONFIRMED"}
             and r["_start_at"] is not None and r["_start_at"] > now_local
         ]
-        for row in rows:
-            row["_display_status"] = "UPCOMING"
     elif view == "today":
         rows = [
             r for r in all_rows
             if r["_date"] == today
             and r["_display_status"] in {"BOOKED", "CONFIRMED", "COMPLETED", "NO_SHOW"}
         ]
+    elif view == "completed":
+        rows = [r for r in all_rows if r["_display_status"] == "COMPLETED"]
+    elif view == "no_show":
+        rows = [r for r in all_rows if r["_display_status"] == "NO_SHOW"]
     elif view == "cancelled":
         rows = [r for r in all_rows if r["_display_status"].startswith("CANCELLED")]
     else:

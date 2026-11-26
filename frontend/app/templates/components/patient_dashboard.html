@@ -197,12 +197,20 @@
           {% if bookings is none %}
           <div class="empty-state"><div class="empty-icon">!</div><h3>Booking history could not be loaded</h3><p>Please try again. If the issue continues, contact support.</p><a class="btn secondary" href="{{ url_for('patient.booking_history') }}#booking-history">Try again</a></div>
           {% elif bookings %}
+          <nav class="patient-booking-filter-nav" aria-label="Filter booking history">
+            <button type="button" class="active" data-booking-filter="all">All</button>
+            <button type="button" data-booking-filter="confirmed">Confirmed</button>
+            <button type="button" data-booking-filter="completed">Completed</button>
+            <button type="button" data-booking-filter="no_show">No Show</button>
+            <button type="button" data-booking-filter="cancelled">Cancelled</button>
+          </nav>
+          <p class="muted patient-booking-filter-empty" data-booking-filter-empty hidden>No appointments match this status.</p>
           <div class="patient-booking-list">
             {% for booking in bookings %}
             {% set status = (booking.status|string|upper) or 'STATUS UNAVAILABLE' %}
             {% set booking_date = (booking.start_at_ist|string|replace('T',' '))[:10] %}
             {% set is_cancelled = status in ['CANCELLED', 'CANCELLED_BY_PATIENT', 'CANCELLED_BY_DOCTOR'] %}
-            <article class="panel patient-booking-card" data-booking-card data-booking-date="{{ booking_date }}" data-booking-status="{{ 'cancelled' if is_cancelled else 'active' }}">
+            <article class="panel patient-booking-card" data-booking-card data-booking-date="{{ booking_date }}" data-booking-status="{{ 'cancelled' if is_cancelled else 'completed' if status == 'COMPLETED' else 'no_show' if status == 'NO_SHOW' else 'confirmed' if status in ['BOOKED', 'CONFIRMED'] else 'other' }}">
               <div class="patient-doctor-avatar">{% if booking.profile_photo_display_url %}<img class="patient-doctor-photo" src="{{ booking.profile_photo_display_url }}" alt="Dr. {{ booking.doctor_first_name }}" onerror="this.hidden=true;this.nextElementSibling.hidden=false">{% endif %}<div class="avatar large patient-photo-fallback" {% if booking.profile_photo_display_url %}hidden{% endif %}>{{ (booking.doctor_first_name or 'D')[0]|upper }}</div></div>
               <div class="patient-booking-info"><h3>Dr. {{ booking.doctor_first_name }} {{ booking.doctor_last_name or '' }}</h3><p>{{ booking.specialisations or 'Specialisation not listed' }}</p><p><strong>Hospital:</strong> {{ booking.hospital_name }}{% if booking.branch_name %} – {{ booking.branch_name }}{% endif %}, {{ booking.city }}</p><p><strong>Appointment:</strong> {{ booking.start_at_ist }} – {{ booking.end_at_ist }} IST</p><p><strong>Consultation:</strong> {{ booking.consultation_type }}{% if booking.duration_minutes %} · {{ booking.duration_minutes }} minutes{% endif %}</p><p><strong>Fee:</strong> ₹{{ booking.consultation_fee or booking.fee or '0.00' }}</p><small>Booking reference: {{ booking.appointment_id }}{% if booking.slot_id %} · Slot: {{ booking.slot_id }}{% endif %}</small></div>
               <div class="patient-booking-actions">
@@ -273,6 +281,21 @@
   document.querySelectorAll('a[href="#find-doctors"]').forEach(a=>a.addEventListener('click',()=>showPage('find-doctors')));
   route();
 
+  const bookingFilters=[...document.querySelectorAll('[data-booking-filter]')];
+  const bookingCards=[...document.querySelectorAll('[data-booking-card]')];
+  const bookingFilterEmpty=document.querySelector('[data-booking-filter-empty]');
+  bookingFilters.forEach(button=>button.addEventListener('click',()=>{
+    const selected=button.dataset.bookingFilter;
+    let visible=0;
+    bookingFilters.forEach(item=>item.classList.toggle('active',item===button));
+    bookingCards.forEach(card=>{
+      const show=selected==='all'||card.dataset.bookingStatus===selected;
+      card.hidden=!show;
+      if(show) visible++;
+    });
+    if(bookingFilterEmpty) bookingFilterEmpty.hidden=visible!==0;
+  }));
+
   const slotFilter=document.getElementById('patient-slot-type-filter');
   const slotCards=[...document.querySelectorAll('.patient-slot-card')];
   const noSlotResults=document.getElementById('patient-slot-no-results');
@@ -309,4 +332,11 @@
 
 <style>
 .cancellation-origin{display:block;margin-top:5px;color:var(--muted,#9db0bd);font-size:.82rem;font-weight:600}
+</style>
+
+<style>
+.patient-booking-filter-nav{display:flex;gap:9px;flex-wrap:wrap;margin:16px 0 20px;padding-bottom:14px;border-bottom:1px solid var(--border,rgba(255,255,255,.12))}
+.patient-booking-filter-nav button{padding:9px 15px;border-radius:10px;border:1px solid var(--border,rgba(255,255,255,.12));background:rgba(255,255,255,.04);color:var(--text,#eaf2f7);cursor:pointer}
+.patient-booking-filter-nav button.active{background:rgba(83,197,187,.16);border-color:#53c5bb;color:#53c5bb;font-weight:700}
+.patient-booking-filter-empty[hidden]{display:none!important}
 </style>

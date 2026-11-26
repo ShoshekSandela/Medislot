@@ -216,6 +216,8 @@
   <nav class="appointment-filter-nav" aria-label="Appointment views">
     <a class="{{ 'active' if appointment_view == 'upcoming' else '' }}" href="{{ url_for('doctor.appointments', view='upcoming') }}">Upcoming</a>
     <a class="{{ 'active' if appointment_view == 'today' else '' }}" href="{{ url_for('doctor.appointments', view='today') }}">Today</a>
+    <a class="{{ 'active' if appointment_view == 'completed' else '' }}" href="{{ url_for('doctor.appointments', view='completed') }}">Completed</a>
+    <a class="{{ 'active' if appointment_view == 'no_show' else '' }}" href="{{ url_for('doctor.appointments', view='no_show') }}">No Show</a>
     <a class="{{ 'active' if appointment_view == 'cancelled' else '' }}" href="{{ url_for('doctor.appointments', view='cancelled') }}">Cancelled</a>
     <a class="{{ 'active' if appointment_view == 'refunds' else '' }}" href="{{ url_for('doctor.appointments', view='refunds') }}">Refunds</a>
   </nav>
@@ -259,7 +261,7 @@
               <td>{{ a.start_at_ist|string|replace('T',' ') }}<small>To {{ a.end_at_ist|string|replace('T',' ') }}</small></td>
               <td>{{ a.consultation_type or 'Consultation' }}</td>
               <td>₹{{ '%.2f'|format((a.consultation_fee or a.fee or 0)|float) }}</td>
-              <td><span class="status-pill {{ 'good' if status in ['UPCOMING','CONFIRMED','COMPLETED'] else 'warning' }}">{{ status|replace('_',' ')|title }}</span></td>
+              <td><span class="status-pill {{ 'good' if status in ['CONFIRMED','COMPLETED'] else 'warning' if status == 'NO_SHOW' or status.startswith('CANCELLED') else 'muted-pill' }}">{{ 'Cancelled' if status.startswith('CANCELLED') else status|replace('_',' ')|title }}</span></td>
               <td>
                 {% if status in ['UPCOMING', 'CONFIRMED'] %}
                   <div class="appointment-outcome-actions">
