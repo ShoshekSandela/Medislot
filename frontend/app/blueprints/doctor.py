@@ -2346,6 +2346,8 @@ def schedule():
 
         day=day,
 
+        now_ist=datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None),
+
         dates=dates,
 
         schedules=schedules,
@@ -2428,11 +2430,14 @@ def appointments():
         status = row_status(row)
         start_at = row_start(row)
         end_at = row_end(row)
-        if status in {"BOOKED", "CONFIRMED"} and end_at and end_at <= now_local:
-            status = "COMPLETED"
         row["_display_status"] = status
         row["_start_at"] = start_at
         row["_date"] = start_at.date().isoformat() if start_at else ""
+        row["_can_mark_outcome"] = (
+            status == "CONFIRMED"
+            and start_at is not None
+            and start_at <= now_local
+        )
 
     if view == "upcoming":
         rows = [
@@ -2446,7 +2451,7 @@ def appointments():
         rows = [
             r for r in all_rows
             if r["_date"] == today
-            and r["_display_status"] in {"BOOKED", "CONFIRMED", "COMPLETED"}
+            and r["_display_status"] in {"BOOKED", "CONFIRMED", "COMPLETED", "NO_SHOW"}
         ]
     elif view == "cancelled":
         rows = [r for r in all_rows if r["_display_status"].startswith("CANCELLED")]
@@ -2469,8 +2474,53 @@ def appointments():
         "Appointments", "appointments",
         appointments=rows, appointments_error=load_error,
         appointment_view=view, appointment_today=today,
+        now_ist=now_local,
         refund_rows=refund_rows, refunds_error=refunds_error,
     )
+
+
+@bp.post("/appointments/<int:appointment_id>/outcome")
+@doctor_required
+def appointment_outcome(appointment_id):
+    """Record the treating doctor's Completed or No Show decision."""
+    outcome = (request.form.get("outcome") or "").strip().upper()
+    if outcome not in {"COMPLETED", "NO_SHOW"}:
+        flash("Choose Completed or No Show.", "error")
+        return redirect(url_for("doctor.appointments", view="today"))
+    try:
+        post(f"/appointments/{appointment_id}/outcome", {"outcome": outcome})
+        flash(
+            "Appointment marked as Completed." if outcome == "COMPLETED"
+            else "Appointment marked as No Show.",
+            "success",
+        )
+    except APIError as exc:
+        flash(exc.message, "error")
+    return redirect(url_for("doctor.appointments", view="today"))
+
+
+@bp.post("/schedule/session-capacity-override")
+@doctor_required
+def set_session_capacity_override():
+    """Save one Health Camp session's capacity override."""
+    try:
+        consultation_type_id = int(request.form.get("consultation_type_id") or 0)
+        capacity = int(request.form.get("capacity") or 0)
+        slot_time = (request.form.get("slot_time") or "").strip()
+        if not 2 <= capacity <= 10:
+            raise ValueError("Health Camp session capacity must be between 2 and 10.")
+        post(
+            "/doctors/session-capacity-overrides",
+            {
+                "consultation_type_id": consultation_type_id,
+                "slot_time": slot_time,
+                "capacity": capacity,
+            },
+        )
+        flash("Health Camp session capacity updated.", "success")
+    except (ValueError, APIError) as exc:
+        flash(getattr(exc, "message", str(exc)), "error")
+    return redirect(url_for("doctor.schedule", view="day", date=(request.form.get("date") or date.today().isoformat())))
 
 
 @bp.post("/appointments/<int:appointment_id>/cancel")

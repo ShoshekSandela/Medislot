@@ -1138,6 +1138,66 @@ def cancel_doctor_slot(event, doctor_id):
     }
 
 
+
+def mark_appointment_outcome(appointment_id, doctor_id, outcome):
+    """Allow the treating doctor to record COMPLETED or NO_SHOW without seat release."""
+    outcome = str(outcome or "").strip().upper()
+    if outcome not in {"COMPLETED", "NO_SHOW"}:
+        raise ApiError(400, "outcome must be COMPLETED or NO_SHOW")
+
+    connection = connect_db()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT appointment_id, doctor_id, start_at_ist, end_at_ist, status
+                   FROM appointments
+                   WHERE appointment_id = %s AND doctor_id = %s
+                   FOR UPDATE""",
+                (appointment_id, doctor_id),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise ApiError(404, "Appointment was not found")
+
+            current_status = str(row.get("status") or "").upper()
+            if current_status != "CONFIRMED":
+                raise ApiError(
+                    409,
+                    f"Cannot mark this appointment as {outcome.lower().replace('_', ' ')} because its status is {current_status}",
+                )
+
+            now_ist = datetime.now(IST).replace(tzinfo=None)
+            start_at = row.get("start_at_ist")
+            if isinstance(start_at, str):
+                start_at = datetime.fromisoformat(start_at.replace("Z", "+00:00"))
+                if start_at.tzinfo is not None:
+                    start_at = start_at.astimezone(IST).replace(tzinfo=None)
+            if not start_at or start_at > now_ist:
+                raise ApiError(409, "Appointment outcome can only be recorded once the appointment start time has arrived")
+
+            cursor.execute(
+                """UPDATE appointments
+                   SET status = %s, outcome_at_ist = %s
+                   WHERE appointment_id = %s AND doctor_id = %s AND status = 'CONFIRMED'""",
+                (outcome, now_ist, appointment_id, doctor_id),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                raise ApiError(409, "Appointment status changed. Refresh and try again.")
+
+        connection.commit()
+        return {
+            "appointment_id": appointment_id,
+            "status": outcome,
+            "outcome_at_ist": now_ist.isoformat(timespec="seconds"),
+        }
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def list_appointments(caller_id, role):
     if role == "patient":
         where, value = "a.patient_id = %s", caller_id
@@ -1149,20 +1209,10 @@ def list_appointments(caller_id, role):
     connection = connect_db()
     try:
         with connection.cursor() as cursor:
-            now_ist = datetime.now(IST).replace(tzinfo=None)
-            cursor.execute(
-                f"""UPDATE appointments a
-                    SET status = 'COMPLETED'
-                    WHERE {where}
-                      AND status IN ('BOOKED', 'CONFIRMED')
-                      AND end_at_ist <= %s""",
-                (value, now_ist),
-            )
-            connection.commit()
             cursor.execute(
                 f"""SELECT a.appointment_id, a.patient_id, a.doctor_id,
                            a.hospital_id, a.consultation_type_id, a.slot_id,
-                           a.start_at_ist, a.end_at_ist, a.status,
+                           a.start_at_ist, a.end_at_ist, a.status, a.outcome_at_ist,
                            COALESCE(NULLIF(a.consultation_fee, 0), ct.consultation_fee) AS consultation_fee,
                            a.created_at,
                            (SELECT r.cancellation_type FROM refund_ledger r
@@ -1425,6 +1475,22 @@ def lambda_handler(event, context):
             return response(200, {
                 "message": "Appointment cancelled successfully",
                 "cancellation": result,
+            })
+
+        if len(parts) == 3 and parts[0] == "appointments" and parts[2] == "outcome" and method == "POST":
+            if role != "doctor":
+                raise ApiError(403, "Only the treating doctor can record an appointment outcome")
+            try:
+                appointment_id = int(parts[1])
+            except ValueError:
+                raise ApiError(400, "appointment_id must be an integer")
+            if appointment_id <= 0:
+                raise ApiError(400, "appointment_id must be positive")
+            body = parse_body(event)
+            result = mark_appointment_outcome(appointment_id, caller_id, body.get("outcome"))
+            return response(200, {
+                "message": "Appointment outcome recorded successfully",
+                "appointment": result,
             })
 
         raise ApiError(404, "Route not found")

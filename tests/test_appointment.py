@@ -592,3 +592,120 @@ def test_retry_seat_release_reports_failure_as_retryable_503(monkeypatch):
     with pytest.raises(appointment.ApiError) as exc:
         appointment.retry_seat_release(29, 2, "patient")
     assert exc.value.status_code == 503
+
+
+class OutcomeCursor:
+    def __init__(self, row):
+        self.row = dict(row)
+        self.rowcount = 0
+        self.last_sql = ""
+
+    def execute(self, sql, params):
+        self.last_sql = sql
+        if "SELECT appointment_id" in sql and "FOR UPDATE" in sql:
+            self.rowcount = 1
+        elif "UPDATE appointments" in sql:
+            outcome, outcome_at, appointment_id, doctor_id = params
+            if (
+                self.row["appointment_id"] == appointment_id
+                and self.row["doctor_id"] == doctor_id
+                and self.row["status"] == "CONFIRMED"
+            ):
+                self.row["status"] = outcome
+                self.row["outcome_at_ist"] = outcome_at
+                self.rowcount = 1
+            else:
+                self.rowcount = 0
+
+    def fetchone(self):
+        return dict(self.row)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class OutcomeConnection:
+    def __init__(self, row):
+        self.cursor_instance = OutcomeCursor(row)
+        self.committed = False
+        self.rolled_back = False
+        self.closed = False
+
+    def cursor(self):
+        return self.cursor_instance
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.mark.parametrize("outcome", ["COMPLETED", "NO_SHOW"])
+def test_doctor_can_record_outcome_without_changing_slot_seats(monkeypatch, outcome):
+    now = datetime.now(appointment.IST).replace(tzinfo=None)
+    connection = OutcomeConnection({
+        "appointment_id": 71,
+        "doctor_id": 42,
+        "start_at_ist": now - timedelta(minutes=1),
+        "end_at_ist": now + timedelta(minutes=59),
+        "status": "CONFIRMED",
+    })
+    monkeypatch.setattr(appointment, "connect_db", lambda: connection)
+
+    result = appointment.mark_appointment_outcome(71, 42, outcome)
+
+    assert result["status"] == outcome
+    assert connection.cursor_instance.row["status"] == outcome
+    assert connection.cursor_instance.row["outcome_at_ist"] is not None
+    assert connection.committed is True
+    assert connection.closed is True
+    assert "UPDATE appointments" in connection.cursor_instance.last_sql
+    # No DynamoDB seat release or cancellation code is invoked by this operation.
+
+
+def test_doctor_cannot_mark_outcome_before_appointment_starts(monkeypatch):
+    now = datetime.now(appointment.IST).replace(tzinfo=None)
+    connection = OutcomeConnection({
+        "appointment_id": 72,
+        "doctor_id": 42,
+        "start_at_ist": now + timedelta(minutes=10),
+        "end_at_ist": now + timedelta(minutes=70),
+        "status": "CONFIRMED",
+    })
+    monkeypatch.setattr(appointment, "connect_db", lambda: connection)
+
+    with pytest.raises(appointment.ApiError) as exc:
+        appointment.mark_appointment_outcome(72, 42, "NO_SHOW")
+    assert exc.value.status_code == 409
+    assert connection.rolled_back is True
+    assert connection.cursor_instance.row["status"] == "CONFIRMED"
+
+
+def test_only_confirmed_appointments_can_receive_an_outcome(monkeypatch):
+    now = datetime.now(appointment.IST).replace(tzinfo=None)
+    connection = OutcomeConnection({
+        "appointment_id": 73,
+        "doctor_id": 42,
+        "start_at_ist": now - timedelta(minutes=10),
+        "end_at_ist": now + timedelta(minutes=50),
+        "status": "CANCELLED_BY_PATIENT",
+    })
+    monkeypatch.setattr(appointment, "connect_db", lambda: connection)
+
+    with pytest.raises(appointment.ApiError) as exc:
+        appointment.mark_appointment_outcome(73, 42, "COMPLETED")
+    assert exc.value.status_code == 409
+    assert connection.cursor_instance.row["status"] == "CANCELLED_BY_PATIENT"
+
+
+def test_outcome_rejects_unknown_values():
+    with pytest.raises(appointment.ApiError) as exc:
+        appointment.mark_appointment_outcome(73, 42, "CANCELLED")
+    assert exc.value.status_code == 400

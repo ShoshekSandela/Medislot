@@ -286,6 +286,7 @@ def lambda_handler(event, context):
                         a.end_at_ist,
                         a.timezone,
                         a.status,
+                        a.outcome_at_ist,
                         COALESCE(NULLIF(a.consultation_fee, 0), ct.consultation_fee) AS appointment_fee,
                         a.created_at,
                         (SELECT r.cancellation_type FROM refund_ledger r

@@ -141,12 +141,12 @@ def get_availability(connection, day_of_week, target_date, doctor_id=None):
               da.effective_until IS NULL
               OR da.effective_until >= %s
           )
-        ORDER BY da.start_time, da.availability_id
     """
     params = [day_of_week, target_date, target_date]
     if doctor_id is not None:
         sql += " AND da.doctor_id = %s"
         params.append(int(doctor_id))
+    sql += " ORDER BY da.start_time, da.availability_id"
 
     logger.info(
         "STEP 3A: Querying active doctor availability date=%s db_day_of_week=%s doctor_id=%s",
@@ -223,6 +223,30 @@ def create_slot(
         end_ist,
     )
 
+    # A per-session override takes precedence over the consultation type default.
+    # The key is the exact IST start time, so one session never changes another.
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT capacity
+               FROM slot_capacity_overrides
+               WHERE doctor_id = %s
+                 AND consultation_type_id = %s
+                 AND slot_start_ist = %s
+               LIMIT 1""",
+            (
+                int(availability["doctor_id"]),
+                int(availability["consultation_type_id"]),
+                start_ist.replace(tzinfo=None),
+            ),
+        )
+        override_row = cursor.fetchone()
+
+    has_capacity_override = override_row is not None
+    effective_capacity = int(
+        override_row["capacity"] if has_capacity_override
+        else availability.get("capacity", 1)
+    )
+
     slot_id = (
         f"{availability['doctor_id']}#"
         f"{availability['hospital_id']}#"
@@ -243,7 +267,8 @@ def create_slot(
         "hospitalId": int(availability["hospital_id"]),
         "consultationTypeId": int(availability["consultation_type_id"]),
         "consultationFee": str(availability.get("consultation_fee", "0.00")),
-        "capacity": int(availability.get("capacity", 1)),
+        "capacity": effective_capacity,
+        "capacityOverride": has_capacity_override,
         "bookedCount": 0,
         "slotTime": start_ist.isoformat(timespec="seconds"),
         "endTime": end_ist.isoformat(timespec="seconds"),
@@ -308,12 +333,18 @@ def create_slot(
                     "#hospital_id = :hospital_id, "
                     "#consultation_type_id = :consultation_type_id, "
                     "#consultation_fee = :fee, #capacity = :capacity, "
+                    "#capacity_override = :capacity_override, "
                     "#end_time = :end_time, #timezone = :timezone"
                 ),
                 ConditionExpression=(
                     "slotId = :slot_id AND "
-                    "(attribute_not_exists(bookedCount) OR bookedCount = :zero) "
-                    "AND #status <> :doctor_cancelled "
+                    + (
+                        "(attribute_not_exists(bookedCount) OR bookedCount <= :capacity) "
+                        "AND (attribute_not_exists(heldCount) OR heldCount <= :capacity)"
+                        if has_capacity_override
+                        else "(attribute_not_exists(bookedCount) OR bookedCount = :zero)"
+                    )
+                    + " AND #status <> :doctor_cancelled "
                     "AND #status <> :legacy_cancelled "
                     "AND #status <> :cancelling"
                 ),
@@ -324,6 +355,7 @@ def create_slot(
                     "#consultation_type_id": "consultationTypeId",
                     "#consultation_fee": "consultationFee",
                     "#capacity": "capacity",
+                    "#capacity_override": "capacityOverride",
                     "#end_time": "endTime",
                     "#timezone": "timezone",
                 },
@@ -333,7 +365,8 @@ def create_slot(
                     ":hospital_id": int(availability["hospital_id"]),
                     ":consultation_type_id": int(availability["consultation_type_id"]),
                     ":fee": str(availability.get("consultation_fee", "0.00")),
-                    ":capacity": int(availability.get("capacity", 1)),
+                    ":capacity": effective_capacity,
+                    ":capacity_override": has_capacity_override,
                     ":end_time": end_ist.isoformat(timespec="seconds"),
                     ":timezone": "Asia/Kolkata",
                     ":zero": 0,

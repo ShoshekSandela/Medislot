@@ -1002,6 +1002,28 @@ def consultation_types(connection, doctor_id, method, data, item_id=None):
                     "message": "duration_minutes must be 1–120, capacity must be positive, and consultation_fee must be between ₹0 and ₹9,000"
                 })
 
+            cursor.execute(
+                """SELECT type_name, duration_minutes, capacity
+                   FROM consultation_types
+                   WHERE consultation_type_id = %s""",
+                (item_id,),
+            )
+            current_type = cursor.fetchone()
+            if not current_type:
+                return response(404, {"message": "Consultation type not found"})
+            final_name = updates.get("type_name", current_type["type_name"])
+            final_duration = int(updates.get("duration_minutes", current_type["duration_minutes"]))
+            final_capacity = int(updates.get("capacity", current_type["capacity"]))
+            if str(final_name).strip().lower() == "health camp session":
+                if final_duration != 60 or not 2 <= final_capacity <= 10:
+                    return response(400, {
+                        "message": "Health Camp Session must be 60 minutes with default capacity between 2 and 10"
+                    })
+            elif final_capacity != 1:
+                return response(400, {
+                    "message": "Only Health Camp Session may have capacity greater than 1"
+                })
+
             try:
                 cursor.execute(
                     f"UPDATE consultation_types SET {', '.join(f'{key} = %s' for key in updates)} WHERE consultation_type_id = %s",
@@ -1116,6 +1138,119 @@ def has_overlapping_availability(
     sql += " LIMIT 1"
     cursor.execute(sql, tuple(params))
     return cursor.fetchone() is not None
+
+
+@log_execution
+def session_capacity_override(connection, doctor_id, method, data):
+    """Set the effective capacity for one generated Health Camp session."""
+    if method != "POST":
+        return response(405, {"message": "Method not allowed"})
+
+    try:
+        consultation_type_id = int(data.get("consultation_type_id"))
+        capacity = int(data.get("capacity"))
+        slot_value = str(data.get("slot_time") or "").strip()
+        parsed_slot = datetime.fromisoformat(slot_value.replace("Z", "+00:00"))
+        if parsed_slot.tzinfo is not None:
+            parsed_slot = parsed_slot.astimezone(IST).replace(tzinfo=None)
+        slot_time = parsed_slot.replace(microsecond=0)
+    except (TypeError, ValueError):
+        return response(400, {
+            "message": "consultation_type_id, slot_time (ISO-8601 IST) and capacity are required"
+        })
+
+    if consultation_type_id <= 0 or not 2 <= capacity <= 10:
+        return response(400, {"message": "Health Camp session capacity must be between 2 and 10"})
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT consultation_type_id, type_name, duration_minutes, capacity
+               FROM consultation_types
+               WHERE consultation_type_id = %s AND is_active = TRUE
+               LIMIT 1""",
+            (consultation_type_id,),
+        )
+        consultation = cursor.fetchone()
+        if not consultation:
+            return response(404, {"message": "Active consultation type not found"})
+        if str(consultation.get("type_name", "")).strip().lower() != "health camp session":
+            return response(400, {"message": "Session capacity overrides are only available for Health Camp Session"})
+        if int(consultation.get("duration_minutes") or 0) != 60:
+            return response(400, {"message": "Health Camp Session duration must be 60 minutes"})
+
+        weekday = (slot_time.weekday() + 1) % 7
+        cursor.execute(
+            """SELECT availability_id
+               FROM doctor_availability
+               WHERE doctor_id = %s
+                 AND consultation_type_id = %s
+                 AND day_of_week = %s
+                 AND is_active = TRUE
+                 AND start_time <= %s
+                 AND end_time > %s
+                 AND effective_from <= %s
+                 AND (effective_until IS NULL OR effective_until >= %s)
+               LIMIT 1""",
+            (
+                doctor_id, consultation_type_id, weekday,
+                slot_time.time(), slot_time.time(),
+                slot_time.date(), slot_time.date(),
+            ),
+        )
+        if not cursor.fetchone():
+            return response(400, {"message": "The selected time is not in an active Health Camp availability window"})
+
+        table_name = os.environ.get("SLOTS_TABLE_NAME")
+        if not table_name:
+            return response(500, {"message": "SLOTS_TABLE_NAME is not configured"})
+        slot_table = dynamodb.Table(table_name)
+        key = {
+            "doctorId": str(doctor_id),
+            "slotTime": slot_time.isoformat(timespec="seconds"),
+        }
+        current = slot_table.get_item(Key=key, ConsistentRead=True).get("Item")
+        if not current or int(current.get("consultationTypeId", 0)) != consultation_type_id:
+            return response(404, {"message": "Generated Health Camp session was not found"})
+        try:
+            booked = booked_count_value(current.get("bookedCount", 0))
+            held = booked_count_value(current.get("heldCount", 0))
+        except (TypeError, ValueError):
+            return response(409, {"message": "Session seat counters need reconciliation before changing capacity"})
+        if capacity < booked + held:
+            return response(409, {
+                "message": f"Capacity cannot be lower than the {booked + held} already booked or held seats"
+            })
+
+        cursor.execute(
+            """INSERT INTO slot_capacity_overrides
+                   (doctor_id, consultation_type_id, slot_start_ist, capacity)
+               VALUES (%s, %s, %s, %s)
+               ON DUPLICATE KEY UPDATE capacity = VALUES(capacity),
+                                       updated_at = CURRENT_TIMESTAMP""",
+            (doctor_id, consultation_type_id, slot_time, capacity),
+        )
+        connection.commit()
+
+    generation = refresh_generated_slots(
+        doctor_id, slot_time.date().isoformat(), 1
+    )
+    if generation.get("status") != "completed":
+        logger.error(
+            "Session capacity override saved but materialization failed doctor_id=%s slot_time=%s",
+            doctor_id, slot_time.isoformat(),
+        )
+        return response(202, {
+            "message": "Capacity override saved; slot synchronization is pending",
+            "capacity": capacity,
+            "slot_generation": generation,
+        })
+    return response(200, {
+        "message": "Health Camp session capacity updated",
+        "capacity": capacity,
+        "slot_time": slot_time.isoformat(timespec="seconds"),
+        "slot_generation": generation,
+    })
+
 
 
 @log_execution
@@ -1958,7 +2093,7 @@ def lambda_handler(event, context):
 
         reserved = {
             "profile", "photo", "schedule", "availability", "blackouts",
-            "consultation-types", "appointments", "slots", "specialisations",
+            "consultation-types", "appointments", "slots", "specialisations", "session-capacity-overrides",
         }
         is_public_detail = (
             len(parts) == 2 and parts[0] == "doctors" and parts[1] not in reserved
@@ -2030,6 +2165,8 @@ def lambda_handler(event, context):
 
                 if resource == "consultation-types":
                     return consultation_types(connection, doctor_id, method, data, item_id)
+                if resource == "session-capacity-overrides":
+                    return session_capacity_override(connection, doctor_id, method, data)
                 if resource == "availability":
                     return availability(connection, doctor_id, method, data, item_id)
                 if resource == "blackouts":
