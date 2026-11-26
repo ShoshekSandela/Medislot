@@ -199,7 +199,6 @@
           {% elif bookings %}
           <nav class="patient-booking-filter-nav" aria-label="Filter booking history" role="group">
             <button type="button" class="active" data-booking-filter="all" aria-pressed="true">All <span class="filter-count" data-booking-filter-count="all">0</span></button>
-            <button type="button" data-booking-filter="confirmed" aria-pressed="false">Confirmed <span class="filter-count" data-booking-filter-count="confirmed">0</span></button>
             <button type="button" data-booking-filter="completed" aria-pressed="false">Completed <span class="filter-count" data-booking-filter-count="completed">0</span></button>
             <button type="button" data-booking-filter="no_show" aria-pressed="false">No Show <span class="filter-count" data-booking-filter-count="no_show">0</span></button>
             <button type="button" data-booking-filter="cancelled" aria-pressed="false">Cancelled <span class="filter-count" data-booking-filter-count="cancelled">0</span></button>
@@ -285,7 +284,7 @@
   const bookingCards=[...document.querySelectorAll('[data-booking-card]')];
   const bookingFilterEmpty=document.querySelector('[data-booking-filter-empty]');
   // Show live counts on each status tab and filter the cards in place.
-  const bookingCounts={all:bookingCards.length,confirmed:0,completed:0,no_show:0,cancelled:0};
+  const bookingCounts={all:bookingCards.length,completed:0,no_show:0,cancelled:0};
   bookingCards.forEach(card=>{
     const status=card.dataset.bookingStatus;
     if(Object.prototype.hasOwnProperty.call(bookingCounts,status)) bookingCounts[status]++;
