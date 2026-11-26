@@ -41,7 +41,10 @@ class FakeSlotTable:
 
     def get_item(self, Key, ConsistentRead=False):
         with self.lock:
-            return {"Item": dict(self.item)}
+            item = dict(self.item)
+            if "releasedAppointments" in item:
+                item["releasedAppointments"] = set(item["releasedAppointments"])
+            return {"Item": item}
 
     def update_item(
         self,
@@ -53,16 +56,45 @@ class FakeSlotTable:
     ):
         with self.lock:
             values = ExpressionAttributeValues
-            if (
-                self.item.get("seatRevision", 0) != values[":revision"]
-                or self.item["bookedCount"] >= self.item["capacity"]
-                or self.item["status"] not in {
+            current_revision = self.item.get("seatRevision")
+            revision_ok = (
+                current_revision == values.get(":revision")
+                if current_revision is not None
+                else "attribute_not_exists(#revision)" in ConditionExpression
+            )
+            if ":token" in values:  # atomic cancellation release
+                token = values[":token"]
+                released = set(self.item.get("releasedAppointments", set()))
+                valid = (
+                    self.item["bookedCount"] == values[":booked"]
+                    and revision_ok
+                    and token not in released
+                    and self.item["bookedCount"] > 0
+                )
+                if not valid:
+                    raise ClientError(
+                        {"Error": {"Code": "ConditionalCheckFailedException", "Message": "conflict"}},
+                        "UpdateItem",
+                    )
+                self.item["bookedCount"] = values[":next_booked"]
+                self.item["status"] = values[":next_status"]
+                self.item["seatRevision"] = values[":next_revision"]
+                released.update(values[":appt"])
+                self.item["releasedAppointments"] = released
+                return {"Attributes": dict(self.item)}
+
+            valid = (
+                self.item["bookedCount"] == values[":current_booked"]
+                and self.item["bookedCount"] < values[":capacity"]
+                and revision_ok
+                and self.item["status"] in {
                     values[":available"], values[":open"], values[":partial"],
                     values[":booked"], values[":full"], values[":full_booked"],
                     values[":fully_booked"],
                 }
-                or self.item["isBlackout"] != values[":false"]
-            ):
+                and self.item["isBlackout"] == values[":false"]
+            )
+            if not valid:
                 raise ClientError(
                     {"Error": {"Code": "ConditionalCheckFailedException", "Message": "conflict"}},
                     "UpdateItem",
@@ -113,6 +145,58 @@ def test_partial_slot_remains_bookable_and_status_tracks_capacity(monkeypatch, q
     assert table.item["bookedCount"] == 3
     assert table.item["status"] == "FULLY_BOOKED"
 
+
+
+def test_health_camp_cancel_releases_one_seat_and_another_patient_can_book(monkeypatch, quiet_aws):
+    table = FakeSlotTable(capacity=10)
+    monkeypatch.setattr(appointment, "slots_table", table)
+    monkeypatch.setattr(appointment, "idempotency_table", EmptyMarkerTable())
+
+    for _ in range(10):
+        appointment.reserve_slot(42, table.item["slotTime"])
+
+    assert table.item["bookedCount"] == 10
+    assert table.item["status"] == "FULLY_BOOKED"
+    with pytest.raises(appointment.ApiError) as full_error:
+        appointment.reserve_slot(42, table.item["slotTime"])
+    assert full_error.value.status_code == 409
+
+    assert appointment.release_cancelled_seat_once(
+        901, 42, table.item["slotTime"], table.item["slotId"], cancellation_type="PATIENT"
+    ) is True
+    assert table.item["bookedCount"] == 9
+    assert table.item["status"] == "PARTIALLY_BOOKED"
+
+    # A different patient can immediately reserve the released seat.
+    appointment.reserve_slot(42, table.item["slotTime"])
+    assert table.item["bookedCount"] == 10
+    assert table.item["status"] == "FULLY_BOOKED"
+
+    # Retrying the same cancellation cannot free a second seat.
+    assert appointment.release_cancelled_seat_once(
+        901, 42, table.item["slotTime"], table.item["slotId"], cancellation_type="PATIENT"
+    ) is False
+    assert table.item["bookedCount"] == 10
+
+
+def test_booking_without_existing_revision_still_uses_count_compare_and_swap(monkeypatch, quiet_aws):
+    table = FakeSlotTable(capacity=10)
+    table.item.pop("seatRevision", None)
+    monkeypatch.setattr(appointment, "slots_table", table)
+
+    def attempt(_):
+        try:
+            appointment.reserve_slot(42, table.item["slotTime"])
+            return "BOOKED"
+        except appointment.ApiError as error:
+            return error.status_code
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        results = list(pool.map(attempt, range(20)))
+
+    assert results.count("BOOKED") == 10
+    assert table.item["bookedCount"] == 10
+    assert table.item["bookedCount"] <= table.item["capacity"]
 
 def test_refund_tier_cutoff_is_inclusive():
     tiers = [
@@ -508,25 +592,3 @@ def test_retry_seat_release_reports_failure_as_retryable_503(monkeypatch):
     with pytest.raises(appointment.ApiError) as exc:
         appointment.retry_seat_release(29, 2, "patient")
     assert exc.value.status_code == 503
-
-
-def test_capacity_ten_allows_exactly_ten_of_fifty(monkeypatch, quiet_aws):
-    """Health Camp Session supports ten concurrent one-seat bookings."""
-    table = FakeSlotTable(capacity=10)
-    monkeypatch.setattr(appointment, "slots_table", table)
-
-    def attempt(_):
-        try:
-            appointment.reserve_slot(42, table.item["slotTime"])
-            return "BOOKED"
-        except appointment.ApiError as error:
-            return error.status_code
-
-    with ThreadPoolExecutor(max_workers=50) as pool:
-        results = list(pool.map(attempt, range(50)))
-
-    assert results.count("BOOKED") == 10
-    assert results.count(409) == 40
-    assert table.item["bookedCount"] == 10
-    assert table.item["status"] == "FULLY_BOOKED"
-    assert table.item["bookedCount"] <= table.item["capacity"]

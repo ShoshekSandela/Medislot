@@ -230,7 +230,8 @@ def reserve_slot(doctor_id, slot_time):
                     "#revision = :next_revision"
                 ),
                 ConditionExpression=(
-                    "(attribute_not_exists(#revision) OR #revision = :revision) "
+                    "#booked = :current_booked AND #booked < :capacity "
+                    "AND (attribute_not_exists(#revision) OR #revision = :revision) "
                     "AND #status IN (:available, :open, :partial, :booked, :full, :full_booked, :fully_booked) "
                     "AND (attribute_not_exists(#blackout) OR #blackout = :false)"
                 ),
@@ -242,6 +243,8 @@ def reserve_slot(doctor_id, slot_time):
                 },
                 ExpressionAttributeValues={
                     ":next_booked": next_booked,
+                    ":current_booked": booked,
+                    ":capacity": capacity,
                     ":revision": revision,
                     ":next_revision": revision + 1,
                     ":next_status": next_status,
@@ -290,7 +293,7 @@ def release_reserved_seat(doctor_id, slot_time, slot_id):
             "#revision = :next_revision"
         ),
         ConditionExpression=(
-            "slotId = :slot_id AND "
+            "slotId = :slot_id AND #booked = :current_booked AND #booked > :zero AND "
             "(attribute_not_exists(#revision) OR #revision = :revision)"
         ),
         ExpressionAttributeNames={
@@ -298,6 +301,8 @@ def release_reserved_seat(doctor_id, slot_time, slot_id):
         },
         ExpressionAttributeValues={
             ":next_booked": next_booked,
+            ":current_booked": booked,
+            ":zero": 0,
             ":next_status": slot_status_for_counts(next_booked, slot.get("capacity", 1)),
             ":next_revision": revision + 1,
             ":revision": revision,
@@ -1133,83 +1138,6 @@ def cancel_doctor_slot(event, doctor_id):
     }
 
 
-
-
-def set_appointment_outcome(appointment_id, doctor_id, outcome):
-    """Record a doctor's final appointment outcome without changing slot capacity."""
-    outcome = str(outcome or "").strip().upper()
-    if outcome not in {"COMPLETED", "NO_SHOW"}:
-        raise ApiError(400, "Outcome must be COMPLETED or NO_SHOW")
-
-    connection = connect_db()
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """SELECT appointment_id, doctor_id, start_at_ist, end_at_ist, status
-                   FROM appointments
-                   WHERE appointment_id = %s
-                   FOR UPDATE""",
-                (appointment_id,),
-            )
-            appointment = cursor.fetchone()
-            if not appointment or int(appointment["doctor_id"]) != int(doctor_id):
-                raise ApiError(404, "Appointment was not found")
-
-            current_status = str(appointment.get("status") or "").upper()
-            if current_status == outcome:
-                return {
-                    "appointment_id": int(appointment_id),
-                    "status": outcome,
-                    "already_recorded": True,
-                    "seat_released": False,
-                }
-            if current_status not in {"BOOKED", "CONFIRMED"}:
-                raise ApiError(409, "Only an active appointment can be marked completed or no-show")
-
-            now = datetime.now(IST).replace(tzinfo=None)
-            start_at = appointment["start_at_ist"]
-            end_at = appointment["end_at_ist"]
-            if start_at > now:
-                raise ApiError(409, "An appointment outcome can only be recorded after the appointment has started")
-            if outcome == "COMPLETED" and end_at > now:
-                raise ApiError(409, "An appointment can be marked completed after its scheduled end time")
-
-            cursor.execute(
-                """UPDATE appointments
-                   SET status = %s, updated_at = CURRENT_TIMESTAMP
-                   WHERE appointment_id = %s AND status IN ('BOOKED', 'CONFIRMED')""",
-                (outcome, appointment_id),
-            )
-            if cursor.rowcount != 1:
-                raise ApiError(409, "Appointment status changed. Refresh and try again")
-            connection.commit()
-
-        result = {
-            "appointment_id": int(appointment_id),
-            "status": outcome,
-            "already_recorded": False,
-            "seat_released": False,
-        }
-        try:
-            publish_event(
-                "AppointmentCompleted" if outcome == "COMPLETED" else "AppointmentNoShow",
-                result,
-            )
-        except Exception:
-            # The RDS outcome is authoritative; an event delivery issue must
-            # not make the doctor think the status update was rolled back.
-            logger.exception(
-                "Appointment outcome saved but event publication failed appointment_id=%s outcome=%s",
-                appointment_id, outcome,
-            )
-        return result
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
-
-
 def list_appointments(caller_id, role):
     if role == "patient":
         where, value = "a.patient_id = %s", caller_id
@@ -1221,6 +1149,16 @@ def list_appointments(caller_id, role):
     connection = connect_db()
     try:
         with connection.cursor() as cursor:
+            now_ist = datetime.now(IST).replace(tzinfo=None)
+            cursor.execute(
+                f"""UPDATE appointments a
+                    SET status = 'COMPLETED'
+                    WHERE {where}
+                      AND status IN ('BOOKED', 'CONFIRMED')
+                      AND end_at_ist <= %s""",
+                (value, now_ist),
+            )
+            connection.commit()
             cursor.execute(
                 f"""SELECT a.appointment_id, a.patient_id, a.doctor_id,
                            a.hospital_id, a.consultation_type_id, a.slot_id,
@@ -1474,24 +1412,6 @@ def lambda_handler(event, context):
             return response(200, {
                 "message": "Seat release checked",
                 "result": retry_seat_release(appointment_id, caller_id, role),
-            })
-
-        if len(parts) == 3 and parts[0] == "appointments" and parts[2] == "outcome" and method == "POST":
-            if role != "doctor":
-                raise ApiError(403, "Only the treating doctor can record an appointment outcome")
-            try:
-                appointment_id = int(parts[1])
-            except ValueError:
-                raise ApiError(400, "appointment_id must be an integer")
-            if appointment_id <= 0:
-                raise ApiError(400, "appointment_id must be positive")
-            body = parse_body(event)
-            result = set_appointment_outcome(
-                appointment_id, caller_id, body.get("status")
-            )
-            return response(200, {
-                "message": "Appointment outcome recorded successfully",
-                "appointment": result,
             })
 
         if len(parts) == 3 and parts[0] == "appointments" and parts[2] == "cancel" and method == "POST":
