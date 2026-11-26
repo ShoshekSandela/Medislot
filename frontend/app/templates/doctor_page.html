@@ -204,6 +204,8 @@
     <a class="{{ 'active' if appointment_view == 'upcoming' else '' }}" href="{{ url_for('doctor.appointments', view='upcoming') }}">Upcoming</a>
     <a class="{{ 'active' if appointment_view == 'today' else '' }}" href="{{ url_for('doctor.appointments', view='today') }}">Today</a>
     <a class="{{ 'active' if appointment_view == 'cancelled' else '' }}" href="{{ url_for('doctor.appointments', view='cancelled') }}">Cancelled</a>
+    <a class="{{ 'active' if appointment_view == 'completed' else '' }}" href="{{ url_for('doctor.appointments', view='completed') }}">Completed</a>
+    <a class="{{ 'active' if appointment_view == 'no_show' else '' }}" href="{{ url_for('doctor.appointments', view='no_show') }}">No-show</a>
     <a class="{{ 'active' if appointment_view == 'refunds' else '' }}" href="{{ url_for('doctor.appointments', view='refunds') }}">Refunds</a>
   </nav>
 
@@ -247,12 +249,28 @@
               <td>{{ a.consultation_type or 'Consultation' }}</td>
               <td>₹{{ '%.2f'|format((a.consultation_fee or a.fee or 0)|float) }}</td>
               <td><span class="status-pill {{ 'good' if status in ['UPCOMING','CONFIRMED','COMPLETED'] else 'warning' }}">{{ status|replace('_',' ')|title }}</span></td>
-              <td>
+              <td class="appointment-actions-cell">
                 {% if status in ['UPCOMING', 'CONFIRMED'] %}
-                  <form method="post" action="{{ url_for('doctor.cancel_appointment', appointment_id=a.appointment_id) }}" onsubmit="return confirm('Cancel this appointment? The applicable doctor cancellation refund will be recorded.');">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                    <button class="btn danger-ghost" type="submit">Cancel appointment</button>
-                  </form>
+                  {% if a.get('_can_record_outcome') %}
+                    <div class="appointment-outcome-actions">
+                      <form method="post" action="{{ url_for('doctor.appointment_outcome', appointment_id=a.appointment_id) }}" onsubmit="return confirm('Mark this appointment as completed?');">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input type="hidden" name="status" value="COMPLETED">
+                        <button class="btn primary small-btn" type="submit">Completed</button>
+                      </form>
+                      <form method="post" action="{{ url_for('doctor.appointment_outcome', appointment_id=a.appointment_id) }}" onsubmit="return confirm('Mark this patient as no-show?');">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <input type="hidden" name="status" value="NO_SHOW">
+                        <button class="btn warning-ghost small-btn" type="submit">No-show</button>
+                      </form>
+                    </div>
+                  {% endif %}
+                  {% if status == 'UPCOMING' %}
+                    <form method="post" action="{{ url_for('doctor.cancel_appointment', appointment_id=a.appointment_id) }}" onsubmit="return confirm('Cancel this appointment? The applicable doctor cancellation refund will be recorded.');">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <button class="btn danger-ghost small-btn" type="submit">Cancel appointment</button>
+                    </form>
+                  {% endif %}
                 {% else %}<span class="muted">—</span>{% endif %}
               </td>
             </tr>

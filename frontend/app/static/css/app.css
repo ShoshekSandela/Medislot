@@ -97,3 +97,32 @@
 .status-pill.full{background:#fde8e8;color:#a23b3b}
 html[data-theme=dark] .status-pill.warning{background:#493817;color:#f4c76b}
 html[data-theme=dark] .status-pill.full{background:#4b2529;color:#ff9b9f}
+
+
+/* Appointment outcome actions */
+.appointment-actions-cell {
+  min-width: 210px;
+}
+.appointment-outcome-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+.appointment-outcome-actions form {
+  margin: 0;
+}
+.btn.warning-ghost {
+  color: #9a5b00;
+  border: 1px solid rgba(190, 125, 24, .45);
+  background: rgba(245, 180, 65, .10);
+}
+.btn.warning-ghost:hover {
+  background: rgba(245, 180, 65, .18);
+}
+.booking-outcome-note {
+  display: block;
+  margin-top: 6px;
+}
+.completed-note { color: #16856f; }
+.no-show-note { color: #a36a12; }

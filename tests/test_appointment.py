@@ -508,3 +508,25 @@ def test_retry_seat_release_reports_failure_as_retryable_503(monkeypatch):
     with pytest.raises(appointment.ApiError) as exc:
         appointment.retry_seat_release(29, 2, "patient")
     assert exc.value.status_code == 503
+
+
+def test_capacity_ten_allows_exactly_ten_of_fifty(monkeypatch, quiet_aws):
+    """Health Camp Session supports ten concurrent one-seat bookings."""
+    table = FakeSlotTable(capacity=10)
+    monkeypatch.setattr(appointment, "slots_table", table)
+
+    def attempt(_):
+        try:
+            appointment.reserve_slot(42, table.item["slotTime"])
+            return "BOOKED"
+        except appointment.ApiError as error:
+            return error.status_code
+
+    with ThreadPoolExecutor(max_workers=50) as pool:
+        results = list(pool.map(attempt, range(50)))
+
+    assert results.count("BOOKED") == 10
+    assert results.count(409) == 40
+    assert table.item["bookedCount"] == 10
+    assert table.item["status"] == "FULLY_BOOKED"
+    assert table.item["bookedCount"] <= table.item["capacity"]

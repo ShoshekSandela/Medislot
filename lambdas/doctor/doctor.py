@@ -1002,6 +1002,26 @@ def consultation_types(connection, doctor_id, method, data, item_id=None):
                     "message": "duration_minutes must be 1–120, capacity must be positive, and consultation_fee must be between ₹0 and ₹9,000"
                 })
 
+            cursor.execute(
+                "SELECT type_name, duration_minutes, capacity FROM consultation_types WHERE consultation_type_id = %s",
+                (item_id,),
+            )
+            existing_type = cursor.fetchone()
+            if not existing_type:
+                return response(404, {"message": "Consultation type not found"})
+            final_name = str(updates.get("type_name", existing_type["type_name"])).strip()
+            final_duration = int(updates.get("duration_minutes", existing_type["duration_minutes"]))
+            final_capacity = int(updates.get("capacity", existing_type["capacity"]))
+            if final_name.lower() == "health camp session":
+                if final_duration != 60 or not 2 <= final_capacity <= 10:
+                    return response(400, {
+                        "message": "Health Camp Session must be 60 minutes with capacity 2 to 10"
+                    })
+            elif final_capacity != 1:
+                return response(400, {
+                    "message": "Only Health Camp Session may have capacity greater than 1"
+                })
+
             try:
                 cursor.execute(
                     f"UPDATE consultation_types SET {', '.join(f'{key} = %s' for key in updates)} WHERE consultation_type_id = %s",

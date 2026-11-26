@@ -1971,12 +1971,9 @@ def schedule():
 
         rds_appointments = data.get("appointments") or []
 
-        # Build a slot_id -> confirmed booking count from RDS.
-        # RDS is the system of record: a cancellation is reflected here
-        # immediately, while DynamoDB bookedCount is updated by a separate
-        # transaction that may lag. Using this count ensures the schedule
-        # always shows the true number of live BOOKED seats, so a slot freed
-        # by patient cancellation shows as Open rather than "Fully booked".
+        # Build RDS counts for diagnostics and patient details only.
+        # DynamoDB bookedCount remains the seat-allocation authority because
+        # booking and cancellation both update it with conditional writes.
         rds_booked_by_slot = {}
 
         for appt in rds_appointments:
@@ -2383,7 +2380,7 @@ def schedule():
 def appointments():
     """Show the doctor's appointments grouped into Upcoming, Today, Cancelled and Refunds."""
     view = (request.args.get("view") or "upcoming").strip().lower()
-    if view not in {"upcoming", "today", "cancelled", "refunds"}:
+    if view not in {"upcoming", "today", "cancelled", "completed", "no_show", "refunds"}:
         view = "upcoming"
 
     now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
@@ -2428,11 +2425,12 @@ def appointments():
         status = row_status(row)
         start_at = row_start(row)
         end_at = row_end(row)
-        if status in {"BOOKED", "CONFIRMED"} and end_at and end_at <= now_local:
-            status = "COMPLETED"
         row["_display_status"] = status
         row["_start_at"] = start_at
         row["_date"] = start_at.date().isoformat() if start_at else ""
+        row["_can_record_outcome"] = bool(
+            status in {"BOOKED", "CONFIRMED"} and start_at and start_at <= now_local
+        )
 
     if view == "upcoming":
         rows = [
@@ -2446,10 +2444,14 @@ def appointments():
         rows = [
             r for r in all_rows
             if r["_date"] == today
-            and r["_display_status"] in {"BOOKED", "CONFIRMED", "COMPLETED"}
+            and r["_display_status"] in {"BOOKED", "CONFIRMED", "COMPLETED", "NO_SHOW"}
         ]
     elif view == "cancelled":
         rows = [r for r in all_rows if r["_display_status"].startswith("CANCELLED")]
+    elif view == "completed":
+        rows = [r for r in all_rows if r["_display_status"] == "COMPLETED"]
+    elif view == "no_show":
+        rows = [r for r in all_rows if r["_display_status"] == "NO_SHOW"]
     else:
         rows = []
 
@@ -2471,6 +2473,26 @@ def appointments():
         appointment_view=view, appointment_today=today,
         refund_rows=refund_rows, refunds_error=refunds_error,
     )
+
+
+@bp.post("/appointments/<int:appointment_id>/outcome")
+@doctor_required
+def appointment_outcome(appointment_id):
+    """Let the treating doctor record COMPLETED or NO_SHOW."""
+    outcome = (request.form.get("status") or "").strip().upper()
+    if outcome not in {"COMPLETED", "NO_SHOW"}:
+        flash("Choose Completed or No-show.", "error")
+        return redirect(url_for("doctor.appointments"))
+    try:
+        post(f"/appointments/{appointment_id}/outcome", {"status": outcome})
+        flash(
+            "Appointment marked as completed." if outcome == "COMPLETED"
+            else "Appointment marked as no-show.",
+            "success",
+        )
+    except APIError as exc:
+        flash(exc.message, "error")
+    return redirect(url_for("doctor.appointments", view="today"))
 
 
 @bp.post("/appointments/<int:appointment_id>/cancel")

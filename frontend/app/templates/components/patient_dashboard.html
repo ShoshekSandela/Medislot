@@ -206,9 +206,14 @@
               <div class="patient-doctor-avatar">{% if booking.profile_photo_display_url %}<img class="patient-doctor-photo" src="{{ booking.profile_photo_display_url }}" alt="Dr. {{ booking.doctor_first_name }}" onerror="this.hidden=true;this.nextElementSibling.hidden=false">{% endif %}<div class="avatar large patient-photo-fallback" {% if booking.profile_photo_display_url %}hidden{% endif %}>{{ (booking.doctor_first_name or 'D')[0]|upper }}</div></div>
               <div class="patient-booking-info"><h3>Dr. {{ booking.doctor_first_name }} {{ booking.doctor_last_name or '' }}</h3><p>{{ booking.specialisations or 'Specialisation not listed' }}</p><p><strong>Hospital:</strong> {{ booking.hospital_name }}{% if booking.branch_name %} – {{ booking.branch_name }}{% endif %}, {{ booking.city }}</p><p><strong>Appointment:</strong> {{ booking.start_at_ist }} – {{ booking.end_at_ist }} IST</p><p><strong>Consultation:</strong> {{ booking.consultation_type }}{% if booking.duration_minutes %} · {{ booking.duration_minutes }} minutes{% endif %}</p><p><strong>Fee:</strong> ₹{{ booking.consultation_fee or booking.fee or '0.00' }}</p><small>Booking reference: {{ booking.appointment_id }}{% if booking.slot_id %} · Slot: {{ booking.slot_id }}{% endif %}</small></div>
               <div class="patient-booking-actions">
-                <span class="status-pill {{ 'good' if status in ['BOOKED', 'CONFIRMED'] else 'warning' if status.startswith('CANCELLED') else 'muted-pill' }}">{{ 'Confirmed' if status in ['BOOKED', 'CONFIRMED'] else 'Cancelled' if status.startswith('CANCELLED') else status|replace('_', ' ')|title }}</span>
+                <span class="status-pill {{ 'good' if status in ['BOOKED', 'CONFIRMED', 'COMPLETED'] else 'warning' if status == 'NO_SHOW' or status.startswith('CANCELLED') else 'muted-pill' }}">{{ 'Confirmed' if status in ['BOOKED', 'CONFIRMED'] else 'Cancelled' if status.startswith('CANCELLED') else 'No-show' if status == 'NO_SHOW' else status|replace('_', ' ')|title }}</span>
                 {% if status.startswith('CANCELLED') %}
                   <small class="cancellation-origin">{{ 'Cancelled by doctor' if (booking.cancellation_type|string|upper) == 'DOCTOR' or status == 'CANCELLED_BY_DOCTOR' else 'Cancelled by patient' if (booking.cancellation_type|string|upper) == 'PATIENT' or status == 'CANCELLED_BY_PATIENT' else 'Cancellation source unavailable' }}</small>
+                {% endif %}
+                {% if status == 'COMPLETED' %}
+                  <small class="booking-outcome-note completed-note">Your appointment was marked completed by the doctor.</small>
+                {% elif status == 'NO_SHOW' %}
+                  <small class="booking-outcome-note no-show-note">The doctor recorded this appointment as no-show.</small>
                 {% endif %}
                 {% if status in ['BOOKED', 'CONFIRMED'] and booking_date >= today %}
                 <form method="post" action="{{ url_for('patient.cancel_booking', appointment_id=booking.appointment_id) }}" onsubmit="return confirm('Cancel this appointment? The applicable refund will be calculated using the cancellation policy.');">
