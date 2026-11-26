@@ -1,7 +1,7 @@
 import os
 import tempfile
 
-FEATURE_FLAGS = {"appointments": False, "cancel_slot": False, "appointment_outcome": False}
+FEATURE_FLAGS = {"appointments": False, "cancel_slot": False, "appointment_outcome": True}
 
 class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "")
