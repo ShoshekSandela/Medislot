@@ -230,6 +230,10 @@ def lambda_handler(event, context):
         if role != "patient":
             return response(403, {"message": "Patient access required"})
 
+        if method == "GET" and path.rstrip("/") == "/patients/me/waitlists":
+            from lambdas.waitlist import waitlist as waitlist_module
+            return response(200, {"waitlists": waitlist_module.list_for_patient(patient_id)})
+
         is_deactivate = method == "DELETE" and path.rstrip("/") == "/patients"
         is_booking_history = (
             method == "GET"

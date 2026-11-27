@@ -215,8 +215,10 @@ def reserve_slot(doctor_id, slot_time):
 
         capacity = int(slot.get("capacity", 1))
         booked = booked_count_value(slot.get("bookedCount", 0))
+        # Seats held for a waitlist offer are not bookable by anyone else.
+        held = booked_count_value(slot.get("heldCount", 0))
         revision = int(slot.get("seatRevision", 0) or 0)
-        if capacity < 1 or booked >= capacity:
+        if capacity < 1 or booked + held >= capacity:
             emit_metric("BookingConflictRetries", retries)
             raise ApiError(409, "This appointment slot is full")
 
@@ -1492,6 +1494,13 @@ def lambda_handler(event, context):
                 "message": "Appointment outcome recorded successfully",
                 "appointment": result,
             })
+
+        if method == "PATCH" and len(parts) == 2 and parts[0] == "appointments":
+            # Reschedule is started here (existing API route) and runs as a Step Functions saga.
+            if role != "patient":
+                raise ApiError(403, "Only patients can reschedule their appointments")
+            from lambdas.reschedule.reschedule import start_reschedule
+            return start_reschedule(event, caller_id)
 
         raise ApiError(404, "Route not found")
 

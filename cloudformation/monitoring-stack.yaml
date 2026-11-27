@@ -1,0 +1,361 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: MediSlot operations dashboard and alarms (CloudWatch only; X-Ray intentionally not used)
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+  AlarmTopicArn:
+    Type: String
+    Description: SNS topic that receives alarm notifications
+  DatabaseInstanceIdentifier:
+    Type: String
+    Default: medislot-dev-mysql
+  ApiCallErrorRateThreshold:
+    Type: Number
+    Default: 5
+    Description: Percent of API requests returning 5xx before alarming
+  LambdaErrorRateThreshold:
+    Type: Number
+    Default: 5
+    Description: Percent of Lambda invocations failing before alarming
+  RdsCpuThreshold:
+    Type: Number
+    Default: 70
+  ConditionalCheckFailureThreshold:
+    Type: Number
+    Default: 50
+    Description: Conditional check failures per 5 minutes on the slots table before alarming
+
+Resources:
+
+  # =========================================================
+  # ALARMS
+  # =========================================================
+
+  NotificationDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub medislot-${Environment}-dlq-notifications
+      AlarmDescription: Notification messages failed repeatedly and need investigation
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !Sub medislot-${Environment}-notifications-dlq
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopicArn
+
+  WaitlistDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub medislot-${Environment}-dlq-waitlist
+      AlarmDescription: Hold-offer events failed repeatedly and need investigation
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !Sub medislot-${Environment}-waitlist-dlq
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopicArn
+
+  SagaCompensationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub medislot-${Environment}-reschedule-compensated
+      AlarmDescription: A reschedule entered the compensation path (target claim undone)
+      Namespace: MediSlot/Bookings
+      MetricName: ReschedulesCompensated
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopicArn
+
+  SagaReconciliationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub medislot-${Environment}-reschedule-reconciliation
+      AlarmDescription: Compensation could not finish; seat counts need reconciliation
+      Namespace: MediSlot/Bookings
+      MetricName: ReschedulesNeedReconciliation
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopicArn
+
+  ApiServerErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub medislot-${Environment}-api-5xx-rate
+      AlarmDescription: API Gateway 5xx responses exceed the configured percentage
+      EvaluationPeriods: 3
+      Threshold: !Ref ApiCallErrorRateThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: errors
+          MetricStat:
+            Metric:
+              Namespace: AWS/ApiGateway
+              MetricName: 5XXError
+              Dimensions:
+                - Name: ApiName
+                  Value: !Sub medislot-${Environment}-api
+                - Name: Stage
+                  Value: !Ref Environment
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: requests
+          MetricStat:
+            Metric:
+              Namespace: AWS/ApiGateway
+              MetricName: Count
+              Dimensions:
+                - Name: ApiName
+                  Value: !Sub medislot-${Environment}-api
+                - Name: Stage
+                  Value: !Ref Environment
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: rate
+          Expression: 100 * errors / MAX([errors, requests, 1])
+          Label: 5xx percent
+          ReturnData: true
+      AlarmActions:
+        - !Ref AlarmTopicArn
+
+  RdsCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub medislot-${Environment}-rds-cpu
+      AlarmDescription: RDS CPU above the configured threshold
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DatabaseInstanceIdentifier
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: !Ref RdsCpuThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopicArn
+
+  SlotsConditionalFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub medislot-${Environment}-slots-conditional-failures
+      AlarmDescription: Booking contention on the slots table is above the configured threshold
+      Namespace: AWS/DynamoDB
+      MetricName: ConditionalCheckFailedRequests
+      Dimensions:
+        - Name: TableName
+          Value: !Sub medislot-${Environment}-slots
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Ref ConditionalCheckFailureThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopicArn
+
+  AppointmentLambdaErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub medislot-${Environment}-appointment-error-rate
+      AlarmDescription: Appointment Lambda error rate above the configured threshold
+      EvaluationPeriods: 2
+      Threshold: !Ref LambdaErrorRateThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: errors
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Sub medislot-${Environment}-appointment
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: invocations
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Invocations
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Sub medislot-${Environment}-appointment
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: rate
+          Expression: 100 * errors / MAX([errors, invocations, 1])
+          ReturnData: true
+      AlarmActions:
+        - !Ref AlarmTopicArn
+
+  RescheduleLambdaErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub medislot-${Environment}-reschedule-error-rate
+      AlarmDescription: Reschedule Lambda error rate above the configured threshold
+      EvaluationPeriods: 2
+      Threshold: !Ref LambdaErrorRateThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: errors
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Sub medislot-${Environment}-reschedule
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: invocations
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Invocations
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Sub medislot-${Environment}-reschedule
+            Period: 300
+            Stat: Sum
+          ReturnData: false
+        - Id: rate
+          Expression: 100 * errors / MAX([errors, invocations, 1])
+          ReturnData: true
+      AlarmActions:
+        - !Ref AlarmTopicArn
+
+  # =========================================================
+  # OPERATIONS DASHBOARD
+  # =========================================================
+
+  OperationsDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub medislot-operations-${Environment}
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {"type": "metric", "x": 0, "y": 0, "width": 12, "height": 6,
+             "properties": {"title": "API Gateway requests and errors", "region": "${AWS::Region}", "stat": "Sum", "period": 300,
+               "metrics": [["AWS/ApiGateway", "Count", "ApiName", "medislot-${Environment}-api", "Stage", "${Environment}"],
+                           ["AWS/ApiGateway", "4XXError", "ApiName", "medislot-${Environment}-api", "Stage", "${Environment}"],
+                           ["AWS/ApiGateway", "5XXError", "ApiName", "medislot-${Environment}-api", "Stage", "${Environment}"]]}},
+            {"type": "metric", "x": 12, "y": 0, "width": 12, "height": 6,
+             "properties": {"title": "API latency p50 and p99", "region": "${AWS::Region}", "period": 300,
+               "metrics": [["AWS/ApiGateway", "Latency", "ApiName", "medislot-${Environment}-api", "Stage", "${Environment}", {"stat": "p50"}],
+                           ["AWS/ApiGateway", "Latency", "ApiName", "medislot-${Environment}-api", "Stage", "${Environment}", {"stat": "p99"}]]}},
+            {"type": "metric", "x": 0, "y": 6, "width": 12, "height": 6,
+             "properties": {"title": "Lambda invocations and errors", "region": "${AWS::Region}", "stat": "Sum", "period": 300,
+               "metrics": [["AWS/Lambda", "Invocations", "FunctionName", "medislot-${Environment}-appointment"],
+                           ["AWS/Lambda", "Errors", "FunctionName", "medislot-${Environment}-appointment"],
+                           ["AWS/Lambda", "Invocations", "FunctionName", "medislot-${Environment}-reschedule"],
+                           ["AWS/Lambda", "Errors", "FunctionName", "medislot-${Environment}-reschedule"],
+                           ["AWS/Lambda", "Invocations", "FunctionName", "medislot-${Environment}-notification"],
+                           ["AWS/Lambda", "Errors", "FunctionName", "medislot-${Environment}-notification"]]}},
+            {"type": "metric", "x": 12, "y": 6, "width": 12, "height": 6,
+             "properties": {"title": "Lambda duration p50 and p99 (appointment)", "region": "${AWS::Region}", "period": 300,
+               "metrics": [["AWS/Lambda", "Duration", "FunctionName", "medislot-${Environment}-appointment", {"stat": "p50"}],
+                           ["AWS/Lambda", "Duration", "FunctionName", "medislot-${Environment}-appointment", {"stat": "p99"}]]}},
+            {"type": "metric", "x": 0, "y": 12, "width": 12, "height": 6,
+             "properties": {"title": "Lambda throttles", "region": "${AWS::Region}", "stat": "Sum", "period": 300,
+               "metrics": [["AWS/Lambda", "Throttles", "FunctionName", "medislot-${Environment}-appointment"],
+                           ["AWS/Lambda", "Throttles", "FunctionName", "medislot-${Environment}-reschedule"],
+                           ["AWS/Lambda", "Throttles", "FunctionName", "medislot-${Environment}-waitlist"]]}},
+            {"type": "metric", "x": 12, "y": 12, "width": 12, "height": 6,
+             "properties": {"title": "DynamoDB consumed capacity and conditional failures", "region": "${AWS::Region}", "stat": "Sum", "period": 300,
+               "metrics": [["AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", "medislot-${Environment}-slots"],
+                           ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "medislot-${Environment}-slots"],
+                           ["AWS/DynamoDB", "ConditionalCheckFailedRequests", "TableName", "medislot-${Environment}-slots"],
+                           ["AWS/DynamoDB", "ThrottledRequests", "TableName", "medislot-${Environment}-slots"]]}},
+            {"type": "metric", "x": 0, "y": 18, "width": 12, "height": 6,
+             "properties": {"title": "SQS messages visible and oldest age", "region": "${AWS::Region}", "period": 300,
+               "metrics": [["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "medislot-${Environment}-notifications"],
+                           ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "medislot-${Environment}-waitlist"],
+                           ["AWS/SQS", "ApproximateAgeOfOldestMessage", "QueueName", "medislot-${Environment}-notifications"]]}},
+            {"type": "metric", "x": 12, "y": 18, "width": 12, "height": 6,
+             "properties": {"title": "Dead-letter queue depth", "region": "${AWS::Region}", "period": 300,
+               "metrics": [["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "medislot-${Environment}-notifications-dlq"],
+                           ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "medislot-${Environment}-waitlist-dlq"]]}},
+            {"type": "metric", "x": 0, "y": 24, "width": 12, "height": 6,
+             "properties": {"title": "Reschedule saga executions", "region": "${AWS::Region}", "stat": "Sum", "period": 300,
+               "metrics": [["AWS/States", "ExecutionsStarted", "StateMachineArn", "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:medislot-${Environment}-reschedule-saga"],
+                           ["AWS/States", "ExecutionsSucceeded", "StateMachineArn", "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:medislot-${Environment}-reschedule-saga"],
+                           ["AWS/States", "ExecutionsFailed", "StateMachineArn", "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:medislot-${Environment}-reschedule-saga"]]}},
+            {"type": "metric", "x": 12, "y": 24, "width": 12, "height": 6,
+             "properties": {"title": "Reschedule compensation and reconciliation", "region": "${AWS::Region}", "stat": "Sum", "period": 300,
+               "metrics": [["MediSlot/Bookings", "ReschedulesSucceeded", "Environment", "${Environment}"],
+                           ["MediSlot/Bookings", "ReschedulesCompensated", "Environment", "${Environment}"],
+                           ["MediSlot/Bookings", "ReschedulesNeedReconciliation", "Environment", "${Environment}"]]}},
+            {"type": "metric", "x": 0, "y": 30, "width": 12, "height": 6,
+             "properties": {"title": "Waitlist promotions and expiries", "region": "${AWS::Region}", "stat": "Sum", "period": 300,
+               "metrics": [["MediSlot/Bookings", "WaitlistPromotions", "Environment", "${Environment}"],
+                           ["MediSlot/Bookings", "OffersExpired", "Environment", "${Environment}"]]}},
+            {"type": "metric", "x": 12, "y": 30, "width": 12, "height": 6,
+             "properties": {"title": "Notifications dispatched and no-shows", "region": "${AWS::Region}", "stat": "Sum", "period": 300,
+               "metrics": [["MediSlot/Bookings", "NotificationsDispatched", "Environment", "${Environment}"],
+                           ["MediSlot/Bookings", "NoShowRate", "Environment", "${Environment}"]]}},
+            {"type": "metric", "x": 0, "y": 36, "width": 12, "height": 6,
+             "properties": {"title": "RDS CPU, connections and free storage", "region": "${AWS::Region}", "period": 300,
+               "metrics": [["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", "${DatabaseInstanceIdentifier}"],
+                           ["AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", "${DatabaseInstanceIdentifier}"],
+                           ["AWS/RDS", "FreeStorageSpace", "DBInstanceIdentifier", "${DatabaseInstanceIdentifier}"]]}},
+            {"type": "metric", "x": 12, "y": 36, "width": 12, "height": 6,
+             "properties": {"title": "Authentication (login and token rejections)", "region": "${AWS::Region}", "stat": "Sum", "period": 300,
+               "metrics": [["MediSlot/Bookings", "LoginSuccesses", "Environment", "${Environment}"],
+                           ["MediSlot/Bookings", "LoginFailures", "Environment", "${Environment}"],
+                           ["MediSlot/Bookings", "TokenRejections", "Environment", "${Environment}"]]}},
+            {"type": "alarm", "x": 0, "y": 42, "width": 24, "height": 4,
+             "properties": {"title": "Alarm status",
+               "alarms": ["arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:medislot-${Environment}-reschedule-compensated"]}}
+          ]
+        }
+
+Outputs:
+  DashboardName:
+    Value: !Sub medislot-operations-${Environment}

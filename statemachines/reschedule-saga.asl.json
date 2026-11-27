@@ -1,0 +1,304 @@
+{
+  "Comment": "MediSlot reschedule saga. Each Lambda task receives the whole state; results go to distinct paths so later steps can read earlier ones.",
+  "StartAt": "Validate",
+  "States": {
+    "Validate": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RescheduleFunctionArn}",
+        "Payload": {
+          "operation": "validate",
+          "input.$": "$"
+        }
+      },
+      "ResultSelector": {
+        "result.$": "$.Payload"
+      },
+      "ResultPath": "$.validated",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Rejected"
+        }
+      ],
+      "Next": "ClaimTarget"
+    },
+    "ClaimTarget": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RescheduleFunctionArn}",
+        "Payload": {
+          "operation": "claim_target",
+          "input.$": "$"
+        }
+      },
+      "ResultSelector": {
+        "result.$": "$.Payload"
+      },
+      "ResultPath": "$.claimed",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "Rejected"
+        }
+      ],
+      "Next": "ReleaseOriginal"
+    },
+    "ReleaseOriginal": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RescheduleFunctionArn}",
+        "Payload": {
+          "operation": "release_original",
+          "input.$": "$"
+        }
+      },
+      "ResultSelector": {
+        "result.$": "$.Payload"
+      },
+      "ResultPath": "$.released",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "CompensateTarget"
+        }
+      ],
+      "Next": "CommitAppointment"
+    },
+    "CommitAppointment": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RescheduleFunctionArn}",
+        "Payload": {
+          "operation": "commit_appointment",
+          "input.$": "$"
+        }
+      },
+      "ResultSelector": {
+        "result.$": "$.Payload"
+      },
+      "ResultPath": "$.committed",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "ReclaimOriginal"
+        }
+      ],
+      "Next": "PublishRescheduled"
+    },
+    "PublishRescheduled": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RescheduleFunctionArn}",
+        "Payload": {
+          "operation": "publish_rescheduled",
+          "input.$": "$"
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "Rescheduled"
+    },
+    "CompensateTarget": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RescheduleFunctionArn}",
+        "Payload": {
+          "operation": "compensate_target",
+          "input.$": "$"
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 5,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "Compensated",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "ReconciliationRequired"
+        }
+      ]
+    },
+    "ReclaimOriginal": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RescheduleFunctionArn}",
+        "Payload": {
+          "operation": "reclaim_original",
+          "input.$": "$"
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "UndoTargetAfterCommitFailure",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "UndoTargetAfterCommitFailure"
+        }
+      ]
+    },
+    "UndoTargetAfterCommitFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RescheduleFunctionArn}",
+        "Payload": {
+          "operation": "compensate_target",
+          "input.$": "$"
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "Compensated",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "ReconciliationRequired"
+        }
+      ]
+    },
+    "Rejected": {
+      "Type": "Fail",
+      "Error": "RescheduleRejected",
+      "Cause": "Validation or target claim refused. Appointment unchanged."
+    },
+    "Compensated": {
+      "Type": "Fail",
+      "Error": "RescheduleCompensated",
+      "Cause": "A step failed after the target was claimed. Original appointment restored."
+    },
+    "ReconciliationRequired": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${RescheduleFunctionArn}",
+        "Payload": {
+          "operation": "mark_reconciliation_required",
+          "input.$": "$"
+        }
+      },
+      "ResultPath": null,
+      "Next": "ReconciliationFailed"
+    },
+    "Rescheduled": {
+      "Type": "Succeed"
+    },
+    "ReconciliationFailed": {
+      "Type": "Fail",
+      "Error": "RescheduleReconciliationRequired",
+      "Cause": "Compensation could not complete. Reconcile seat counts for this execution."
+    }
+  }
+}

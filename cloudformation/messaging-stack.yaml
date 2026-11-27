@@ -1,0 +1,194 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: MediSlot messaging - SNS topics, SQS queues with per-consumer DLQs, EventBridge rules
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+
+Resources:
+
+  # =========================================================
+  # SNS - notification delivery boundary (email/SMS are out of scope)
+  # =========================================================
+
+  PatientNotificationsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub medislot-${Environment}-patient-notifications
+      KmsMasterKeyId: alias/aws/sns
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  DoctorNotificationsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub medislot-${Environment}-doctor-notifications
+      KmsMasterKeyId: alias/aws/sns
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  AlarmsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub medislot-${Environment}-alarms
+      KmsMasterKeyId: alias/aws/sns
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  # =========================================================
+  # SQS - one queue and one DLQ per consumer
+  # =========================================================
+
+  NotificationDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub medislot-${Environment}-notifications-dlq
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  NotificationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub medislot-${Environment}-notifications
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 345600
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt NotificationDlq.Arn
+        maxReceiveCount: 5
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  WaitlistDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub medislot-${Environment}-waitlist-dlq
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  WaitlistQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub medislot-${Environment}-waitlist
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 345600
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt WaitlistDlq.Arn
+        maxReceiveCount: 5
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  # Only the matching EventBridge rule may send to each queue.
+  NotificationQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref NotificationQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowNotificationRuleOnly
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt NotificationQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt NotificationRule.Arn
+
+  WaitlistQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref WaitlistQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowWaitlistRuleOnly
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt WaitlistQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt WaitlistRule.Arn
+
+  # =========================================================
+  # EventBridge - domain events from the default bus
+  # =========================================================
+
+  NotificationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub medislot-${Environment}-notification-events
+      Description: Appointment and waitlist events that need a patient or doctor notification
+      EventPattern:
+        source:
+          - medislot.appointments
+        detail-type:
+          - AppointmentBooked
+          - AppointmentRescheduled
+          - AppointmentCancelled
+          - WaitlistOfferIssued
+          - WaitlistOfferExpired
+      State: ENABLED
+      Targets:
+        - Id: notification-queue
+          Arn: !GetAtt NotificationQueue.Arn
+
+  WaitlistRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub medislot-${Environment}-seat-freed
+      Description: A seat was freed by a cancellation; the waitlist offers it
+      EventPattern:
+        source:
+          - medislot.appointments
+        detail-type:
+          - SlotSeatFreed
+      State: ENABLED
+      Targets:
+        - Id: waitlist-queue
+          Arn: !GetAtt WaitlistQueue.Arn
+
+Outputs:
+  PatientTopicArn:
+    Description: SNS topic for patient notifications
+    Value: !Ref PatientNotificationsTopic
+  DoctorTopicArn:
+    Description: SNS topic for doctor notifications
+    Value: !Ref DoctorNotificationsTopic
+  AlarmsTopicArn:
+    Description: SNS topic that receives CloudWatch alarms
+    Value: !Ref AlarmsTopic
+  NotificationQueueArn:
+    Value: !GetAtt NotificationQueue.Arn
+  NotificationDlqArn:
+    Value: !GetAtt NotificationDlq.Arn
+  WaitlistQueueArn:
+    Value: !GetAtt WaitlistQueue.Arn
+  WaitlistDlqArn:
+    Value: !GetAtt WaitlistDlq.Arn
+  NotificationDlqName:
+    Value: !GetAtt NotificationDlq.QueueName
+  WaitlistDlqName:
+    Value: !GetAtt WaitlistDlq.QueueName

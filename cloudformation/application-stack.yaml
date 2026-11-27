@@ -72,6 +72,39 @@ Parameters:
     Type: String
     Default: /medislot/dev/jwt/signing-secret
 
+  RescheduleLambdaRoleArn:
+    Type: String
+  WaitlistLambdaRoleArn:
+    Type: String
+  HoldOffersLambdaRoleArn:
+    Type: String
+  NotificationLambdaRoleArn:
+    Type: String
+  ReminderLambdaRoleArn:
+    Type: String
+  NoShowLambdaRoleArn:
+    Type: String
+  RescheduleStateMachineRoleArn:
+    Type: String
+  SchedulerRoleArn:
+    Type: String
+  WaitlistTableName:
+    Type: String
+    Default: medislot-dev-waitlist
+  HoldOffersTableName:
+    Type: String
+    Default: medislot-dev-hold-offers
+  DispatchLogTableName:
+    Type: String
+    Default: medislot-dev-dispatch-log
+  NotificationQueueArn:
+    Type: String
+  WaitlistQueueArn:
+    Type: String
+  PatientTopicArn:
+    Type: String
+  DoctorTopicArn:
+    Type: String
 Resources:
 
   # API Gateway account-level role for publishing execution logs.
@@ -269,6 +302,7 @@ Resources:
           MAX_ACTIVE_APPOINTMENTS_PER_PATIENT: '5'
           MAX_UPCOMING_APPOINTMENTS_PER_DOCTOR: '3'
           BOOKING_MAX_RETRIES: '5'
+          RESCHEDULE_STATE_MACHINE_ARN: !Ref RescheduleStateMachine
       Tags:
         - Key: Project
           Value: MediSlot
@@ -644,13 +678,665 @@ Resources:
         arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/authorizers/*
 
   # =========================================================
+  # MILESTONE 6 LAMBDAS
+  # =========================================================
+  RescheduleLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-reschedule
+      Runtime: python3.12
+      Handler: lambdas.reschedule.reschedule.lambda_handler
+      Role: !Ref RescheduleLambdaRoleArn
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      MemorySize: 256
+      Timeout: 30
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnetAId
+          - !Ref PrivateSubnetBId
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_SECRET_ARN: !Ref DatabaseSecretArn
+          DB_HOST: !Ref DatabaseHost
+          DB_NAME: !Ref DatabaseName
+          USE_SSM_SETTINGS: '1'
+          SLOTS_TABLE_NAME: !Ref SlotsTableName
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  WaitlistLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-waitlist
+      Runtime: python3.12
+      Handler: lambdas.waitlist.waitlist.lambda_handler
+      Role: !Ref WaitlistLambdaRoleArn
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      MemorySize: 256
+      Timeout: 30
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnetAId
+          - !Ref PrivateSubnetBId
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_SECRET_ARN: !Ref DatabaseSecretArn
+          DB_HOST: !Ref DatabaseHost
+          DB_NAME: !Ref DatabaseName
+          USE_SSM_SETTINGS: '1'
+          SLOTS_TABLE_NAME: !Ref SlotsTableName
+          WAITLIST_TABLE_NAME: !Ref WaitlistTableName
+          HOLD_OFFERS_TABLE_NAME: !Ref HoldOffersTableName
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  HoldOffersLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-hold-offers
+      Runtime: python3.12
+      Handler: lambdas.hold_offers.hold_offers.lambda_handler
+      Role: !Ref HoldOffersLambdaRoleArn
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      MemorySize: 256
+      Timeout: 60
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnetAId
+          - !Ref PrivateSubnetBId
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_SECRET_ARN: !Ref DatabaseSecretArn
+          DB_HOST: !Ref DatabaseHost
+          DB_NAME: !Ref DatabaseName
+          USE_SSM_SETTINGS: '1'
+          SLOTS_TABLE_NAME: !Ref SlotsTableName
+          WAITLIST_TABLE_NAME: !Ref WaitlistTableName
+          HOLD_OFFERS_TABLE_NAME: !Ref HoldOffersTableName
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  NotificationLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-notification
+      Runtime: python3.12
+      Handler: lambdas.notification.notification.lambda_handler
+      Role: !Ref NotificationLambdaRoleArn
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      MemorySize: 256
+      Timeout: 60
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnetAId
+          - !Ref PrivateSubnetBId
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_SECRET_ARN: !Ref DatabaseSecretArn
+          DB_HOST: !Ref DatabaseHost
+          DB_NAME: !Ref DatabaseName
+          USE_SSM_SETTINGS: '1'
+          DISPATCH_LOG_TABLE_NAME: !Ref DispatchLogTableName
+          PATIENT_TOPIC_ARN: !Ref PatientTopicArn
+          DOCTOR_TOPIC_ARN: !Ref DoctorTopicArn
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  ReminderLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-reminder
+      Runtime: python3.12
+      Handler: lambdas.reminders.reminder.lambda_handler
+      Role: !Ref ReminderLambdaRoleArn
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      MemorySize: 256
+      Timeout: 120
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnetAId
+          - !Ref PrivateSubnetBId
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_SECRET_ARN: !Ref DatabaseSecretArn
+          DB_HOST: !Ref DatabaseHost
+          DB_NAME: !Ref DatabaseName
+          USE_SSM_SETTINGS: '1'
+          DISPATCH_LOG_TABLE_NAME: !Ref DispatchLogTableName
+          PATIENT_TOPIC_ARN: !Ref PatientTopicArn
+          DOCTOR_TOPIC_ARN: !Ref DoctorTopicArn
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  NoShowLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-no-show
+      Runtime: python3.12
+      Handler: lambdas.no_show.no_show.lambda_handler
+      Role: !Ref NoShowLambdaRoleArn
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      MemorySize: 256
+      Timeout: 60
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnetAId
+          - !Ref PrivateSubnetBId
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_SECRET_ARN: !Ref DatabaseSecretArn
+          DB_HOST: !Ref DatabaseHost
+          DB_NAME: !Ref DatabaseName
+          USE_SSM_SETTINGS: '1'
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  NotificationEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !Ref NotificationQueueArn
+      FunctionName: !Ref NotificationLambda
+      BatchSize: 10
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+
+  WaitlistEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !Ref WaitlistQueueArn
+      FunctionName: !Ref HoldOffersLambda
+      BatchSize: 10
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+
+  RescheduleStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub medislot-${Environment}-reschedule-saga
+      RoleArn: !Ref RescheduleStateMachineRoleArn
+      DefinitionString: !Sub
+        - |
+            {
+              "Comment": "MediSlot reschedule saga. Each Lambda task receives the whole state; results go to distinct paths so later steps can read earlier ones.",
+              "StartAt": "Validate",
+              "States": {
+                "Validate": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${RescheduleFunctionArn}",
+                    "Payload": {
+                      "operation": "validate",
+                      "input.$": "$"
+                    }
+                  },
+                  "ResultSelector": {
+                    "result.$": "$.Payload"
+                  },
+                  "ResultPath": "$.validated",
+                  "Retry": [
+                    {
+                      "ErrorEquals": [
+                        "Lambda.ServiceException",
+                        "Lambda.TooManyRequestsException"
+                      ],
+                      "IntervalSeconds": 1,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "Catch": [
+                    {
+                      "ErrorEquals": [
+                        "States.ALL"
+                      ],
+                      "ResultPath": "$.error",
+                      "Next": "Rejected"
+                    }
+                  ],
+                  "Next": "ClaimTarget"
+                },
+                "ClaimTarget": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${RescheduleFunctionArn}",
+                    "Payload": {
+                      "operation": "claim_target",
+                      "input.$": "$"
+                    }
+                  },
+                  "ResultSelector": {
+                    "result.$": "$.Payload"
+                  },
+                  "ResultPath": "$.claimed",
+                  "Retry": [
+                    {
+                      "ErrorEquals": [
+                        "Lambda.ServiceException",
+                        "Lambda.TooManyRequestsException"
+                      ],
+                      "IntervalSeconds": 1,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "Catch": [
+                    {
+                      "ErrorEquals": [
+                        "States.ALL"
+                      ],
+                      "ResultPath": "$.error",
+                      "Next": "Rejected"
+                    }
+                  ],
+                  "Next": "ReleaseOriginal"
+                },
+                "ReleaseOriginal": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${RescheduleFunctionArn}",
+                    "Payload": {
+                      "operation": "release_original",
+                      "input.$": "$"
+                    }
+                  },
+                  "ResultSelector": {
+                    "result.$": "$.Payload"
+                  },
+                  "ResultPath": "$.released",
+                  "Retry": [
+                    {
+                      "ErrorEquals": [
+                        "Lambda.ServiceException",
+                        "Lambda.TooManyRequestsException"
+                      ],
+                      "IntervalSeconds": 1,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "Catch": [
+                    {
+                      "ErrorEquals": [
+                        "States.ALL"
+                      ],
+                      "ResultPath": "$.error",
+                      "Next": "CompensateTarget"
+                    }
+                  ],
+                  "Next": "CommitAppointment"
+                },
+                "CommitAppointment": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${RescheduleFunctionArn}",
+                    "Payload": {
+                      "operation": "commit_appointment",
+                      "input.$": "$"
+                    }
+                  },
+                  "ResultSelector": {
+                    "result.$": "$.Payload"
+                  },
+                  "ResultPath": "$.committed",
+                  "Retry": [
+                    {
+                      "ErrorEquals": [
+                        "Lambda.ServiceException",
+                        "Lambda.TooManyRequestsException"
+                      ],
+                      "IntervalSeconds": 1,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "Catch": [
+                    {
+                      "ErrorEquals": [
+                        "States.ALL"
+                      ],
+                      "ResultPath": "$.error",
+                      "Next": "ReclaimOriginal"
+                    }
+                  ],
+                  "Next": "PublishRescheduled"
+                },
+                "PublishRescheduled": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${RescheduleFunctionArn}",
+                    "Payload": {
+                      "operation": "publish_rescheduled",
+                      "input.$": "$"
+                    }
+                  },
+                  "ResultPath": null,
+                  "Retry": [
+                    {
+                      "ErrorEquals": [
+                        "Lambda.ServiceException",
+                        "Lambda.TooManyRequestsException"
+                      ],
+                      "IntervalSeconds": 1,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "Next": "Rescheduled"
+                },
+                "CompensateTarget": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${RescheduleFunctionArn}",
+                    "Payload": {
+                      "operation": "compensate_target",
+                      "input.$": "$"
+                    }
+                  },
+                  "ResultPath": null,
+                  "Retry": [
+                    {
+                      "ErrorEquals": [
+                        "Lambda.ServiceException",
+                        "Lambda.TooManyRequestsException"
+                      ],
+                      "IntervalSeconds": 1,
+                      "MaxAttempts": 5,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "Next": "Compensated",
+                  "Catch": [
+                    {
+                      "ErrorEquals": [
+                        "States.ALL"
+                      ],
+                      "ResultPath": "$.error",
+                      "Next": "ReconciliationRequired"
+                    }
+                  ]
+                },
+                "ReclaimOriginal": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${RescheduleFunctionArn}",
+                    "Payload": {
+                      "operation": "reclaim_original",
+                      "input.$": "$"
+                    }
+                  },
+                  "ResultPath": null,
+                  "Retry": [
+                    {
+                      "ErrorEquals": [
+                        "Lambda.ServiceException",
+                        "Lambda.TooManyRequestsException"
+                      ],
+                      "IntervalSeconds": 1,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "Next": "UndoTargetAfterCommitFailure",
+                  "Catch": [
+                    {
+                      "ErrorEquals": [
+                        "States.ALL"
+                      ],
+                      "ResultPath": "$.error",
+                      "Next": "UndoTargetAfterCommitFailure"
+                    }
+                  ]
+                },
+                "UndoTargetAfterCommitFailure": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${RescheduleFunctionArn}",
+                    "Payload": {
+                      "operation": "compensate_target",
+                      "input.$": "$"
+                    }
+                  },
+                  "ResultPath": null,
+                  "Retry": [
+                    {
+                      "ErrorEquals": [
+                        "Lambda.ServiceException",
+                        "Lambda.TooManyRequestsException"
+                      ],
+                      "IntervalSeconds": 1,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "Next": "Compensated",
+                  "Catch": [
+                    {
+                      "ErrorEquals": [
+                        "States.ALL"
+                      ],
+                      "ResultPath": "$.error",
+                      "Next": "ReconciliationRequired"
+                    }
+                  ]
+                },
+                "Rejected": {
+                  "Type": "Fail",
+                  "Error": "RescheduleRejected",
+                  "Cause": "Validation or target claim refused. Appointment unchanged."
+                },
+                "Compensated": {
+                  "Type": "Fail",
+                  "Error": "RescheduleCompensated",
+                  "Cause": "A step failed after the target was claimed. Original appointment restored."
+                },
+                "ReconciliationRequired": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${RescheduleFunctionArn}",
+                    "Payload": {
+                      "operation": "mark_reconciliation_required",
+                      "input.$": "$"
+                    }
+                  },
+                  "ResultPath": null,
+                  "Next": "ReconciliationFailed"
+                },
+                "Rescheduled": {
+                  "Type": "Succeed"
+                },
+                "ReconciliationFailed": {
+                  "Type": "Fail",
+                  "Error": "RescheduleReconciliationRequired",
+                  "Cause": "Compensation could not complete. Reconcile seat counts for this execution."
+                }
+              }
+            }
+        - RescheduleFunctionArn: !GetAtt RescheduleLambda.Arn
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  # Scheduled jobs. Every one is safe to run twice.
+  HoldExpirySchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub medislot-${Environment}-hold-expiry
+      Description: MediSlot hold-expiry schedule
+      ScheduleExpression: 'rate(1 minute)'
+      FlexibleTimeWindow:
+        Mode: 'OFF'
+      Target:
+        Arn: !GetAtt HoldOffersLambda.Arn
+        RoleArn: !Ref SchedulerRoleArn
+        Input: '{"action":"sweep-holds"}'
+
+  ReminderSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub medislot-${Environment}-reminders
+      Description: MediSlot reminders schedule
+      ScheduleExpression: 'rate(5 minutes)'
+      FlexibleTimeWindow:
+        Mode: 'OFF'
+      Target:
+        Arn: !GetAtt ReminderLambda.Arn
+        RoleArn: !Ref SchedulerRoleArn
+        Input: '{}'
+
+  NoShowSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub medislot-${Environment}-no-show
+      Description: MediSlot no-show schedule
+      ScheduleExpression: 'rate(15 minutes)'
+      FlexibleTimeWindow:
+        Mode: 'OFF'
+      Target:
+        Arn: !GetAtt NoShowLambda.Arn
+        RoleArn: !Ref SchedulerRoleArn
+        Input: '{}'
+
+
+  # =========================================================
+  # MILESTONE 6 API ROUTES
+  # =========================================================
+  WaitlistResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ParentId: !GetAtt MediSlotApi.RootResourceId
+      PathPart: waitlist
+  WaitlistRootMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref WaitlistResource
+      HttpMethod: ANY
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref MediSlotApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt WaitlistLambda.Arn
+
+  WaitlistOffersResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ParentId: !GetAtt MediSlotApi.RootResourceId
+      PathPart: waitlist-offers
+  WaitlistOffersProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ParentId: !Ref WaitlistOffersResource
+      PathPart: '{proxy+}'
+  WaitlistOffersProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref WaitlistOffersProxyResource
+      HttpMethod: ANY
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref MediSlotApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt WaitlistLambda.Arn
+
+  PatientMeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ParentId: !Ref PatientsResource
+      PathPart: me
+  PatientMeWaitlistsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ParentId: !Ref PatientMeResource
+      PathPart: waitlists
+  PatientMeWaitlistsGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MediSlotApi
+      ResourceId: !Ref PatientMeWaitlistsResource
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref MediSlotApiAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt PatientLambda.Arn
+
+  WaitlistApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref WaitlistLambda
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${MediSlotApi}/*/*/waitlist*
+
+  # =========================================================
   # API DEPLOYMENT
   # =========================================================
 
   # NOTE: API Gateway only publishes new routes when a NEW deployment is created.
   # CloudFormation creates one only when this logical ID changes, so bump the
   # suffix (V3 -> V4 ...) whenever routes or methods are added or changed.
-  MediSlotApiDeploymentV5:
+  MediSlotApiDeploymentV6:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - AuthMethod
@@ -664,6 +1350,9 @@ Resources:
       - PatientAppointmentsGetMethod
       - AppointmentsRootMethod
       - AppointmentsProxyMethod
+      - WaitlistRootMethod
+      - WaitlistOffersProxyMethod
+      - PatientMeWaitlistsGetMethod
     Properties:
       RestApiId: !Ref MediSlotApi
       Description: !Sub MediSlot ${Environment} API deployment
@@ -676,7 +1365,7 @@ Resources:
       - ApiGatewayAccount
     Properties:
       RestApiId: !Ref MediSlotApi
-      DeploymentId: !Ref MediSlotApiDeploymentV5
+      DeploymentId: !Ref MediSlotApiDeploymentV6
       StageName: !Ref Environment
       AccessLogSetting:
         DestinationArn: !GetAtt ApiGatewayAccessLogGroup.Arn
