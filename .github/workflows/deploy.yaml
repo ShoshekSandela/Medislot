@@ -67,7 +67,7 @@ jobs:
   deploy-messaging:
     name: Deploy Messaging Stack
     runs-on: ubuntu-latest
-    needs: test-lambdas
+    needs: deploy-iam
 
     outputs:
       notification_queue_arn: ${{ steps.outputs.outputs.notification_queue_arn }}
@@ -732,6 +732,7 @@ jobs:
       - deploy-data
       - deploy-messaging
       - deploy-application
+      - deploy-frontend
 
     steps:
 
